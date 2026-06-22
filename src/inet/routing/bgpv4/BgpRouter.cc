@@ -96,6 +96,9 @@ BgpRouter::~BgpRouter(void)
     for (auto& elem : _BGPSessions)
         delete (elem).second;
 
+    for (auto& elem : bgpIpv6RoutingTable)
+        delete elem;
+
     for (auto& elem : _prefixListINOUT)
         delete elem;
 }
@@ -126,6 +129,7 @@ void BgpRouter::addWatches()
     WATCH(myAsId);
     WATCH(_BGPSessions);
     WATCH(bgpRoutingTable);
+    WATCH(bgpIpv6RoutingTable);
     _socketMap.addWatch();
 }
 
@@ -291,6 +295,23 @@ void BgpRouter::addToAdvertiseList(Ipv4Address address)
     BGPEntry->setPathType(IGP);
     BGPEntry->setLocalPreference(bgpModule->par("localPreference").intValue());
     bgpRoutingTable.push_back(BGPEntry);
+}
+
+void BgpRouter::addToAdvertiseIpv6List(const Ipv6Address& address, int prefixLength, const Ipv6Address& nextHop)
+{
+    for (auto route : bgpIpv6RoutingTable) {
+        if (route->getDestination() == address && route->getPrefixLength() == prefixLength)
+            throw cRuntimeError("IPv6 network address '%s/%d' is already added to the advertised list of %s",
+                    address.str().c_str(), prefixLength, bgpModule->getOwner()->getFullName());
+    }
+
+    auto entry = new BgpIpv6RoutingTableEntry(address, prefixLength);
+    entry->setNextHop(nextHop);
+    entry->addAS(myAsId);
+    entry->setPathType(IGP);
+    entry->setLocalPreference(bgpModule->par("localPreference").intValue());
+    bgpIpv6RoutingTable.push_back(entry);
+    advertiseIpv6List.push_back(address);
 }
 
 void BgpRouter::addAddressFamily(const BgpAddressFamily& family)
@@ -635,6 +656,16 @@ void BgpRouter::processMessage(const BgpUpdateMessage& msg)
     printUpdateMessage(msg);
     session->getFSM()->UpdateMsgEvent();
 
+    for (size_t i = 0; i < msg.getPathAttributesArraySize(); i++) {
+        if (msg.getPathAttributes(i)->getTypeCode() == BgpUpdateAttributeTypeCode::MP_REACH_NLRI) {
+            auto& mpReach = *check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(msg.getPathAttributes(i));
+            processMpReachNlri(msg, mpReach, _currSessionId);
+        }
+    }
+
+    if (msg.getNLRIArraySize() == 0)
+        return;
+
     BgpRoutingTableEntry *entry = new BgpRoutingTableEntry();
     entry->setLocalPreference(bgpModule->par("localPreference").intValue());
     entry->setDestination(msg.getNLRI(0).prefix);
@@ -675,6 +706,105 @@ BgpProcessResult BgpRouter::asLoopDetection(BgpRoutingTableEntry *entry, AsId my
             return ASLOOP_DETECTED;
     }
     return ASLOOP_NO_DETECTED;
+}
+
+BgpProcessResult BgpRouter::asLoopDetection(BgpIpv6RoutingTableEntry *entry, AsId myAS)
+{
+    for (unsigned int i = 1; i < entry->getASCount(); i++) {
+        if (myAS == entry->getAS(i))
+            return ASLOOP_DETECTED;
+    }
+    return ASLOOP_NO_DETECTED;
+}
+
+bool BgpRouter::isInIpv6Table(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const
+{
+    for (auto route : rtTable) {
+        if (route->getDestination() == entry->getDestination() &&
+            route->getPrefixLength() == entry->getPrefixLength())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+BgpProcessResult BgpRouter::decisionProcess(BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
+{
+    if (isInIpv6Table(bgpIpv6RoutingTable, entry)) {
+        delete entry;
+        return RESULT0;
+    }
+
+    BgpSessionType type = _BGPSessions[sessionIndex]->getType();
+    if (type == IGP)
+        entry->setIBgpLearned(true);
+
+    entry->setLearnedSessionId(sessionIndex);
+    bgpIpv6RoutingTable.push_back(entry);
+
+    EV_INFO << "Accepted MP-BGP IPv6 route " << entry->str()
+            << " from peer " << _BGPSessions[sessionIndex]->getPeerAddr().str(false) << "\n";
+    return NEW_ROUTE_ADDED;
+}
+
+void BgpRouter::processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdatePathAttributesMpReachNlri& mpReach, SessionId sessionIndex)
+{
+    BgpAddressFamily family;
+    family.afi = mpReach.getAfi();
+    family.safi = mpReach.getSafi();
+
+    if (family.afi != AFI_IPV6 || family.safi != SAFI_UNICAST) {
+        EV_WARN << "Ignoring unsupported MP_REACH_NLRI address family "
+                << addressFamilyToString(family) << "\n";
+        return;
+    }
+
+    if (!_BGPSessions[sessionIndex]->hasNegotiatedAddressFamily(family)) {
+        EV_WARN << "Ignoring unnegotiated MP_REACH_NLRI address family "
+                << addressFamilyToString(family)
+                << " from peer " << _BGPSessions[sessionIndex]->getPeerAddr().str(false) << "\n";
+        return;
+    }
+
+    for (size_t routeIndex = 0; routeIndex < mpReach.getNlriArraySize(); routeIndex++) {
+        const BgpMpNlri& nlri = mpReach.getNlri(routeIndex);
+        auto entry = new BgpIpv6RoutingTableEntry(nlri.ipv6Prefix, nlri.length);
+        entry->setNextHop(mpReach.getNextHopIpv6Address());
+        entry->setLocalPreference(bgpModule->par("localPreference").intValue());
+
+        for (size_t i = 0; i < msg.getPathAttributesArraySize(); i++) {
+            switch (msg.getPathAttributes(i)->getTypeCode()) {
+                case BgpUpdateAttributeTypeCode::ORIGIN: {
+                    auto origin = check_and_cast<const BgpUpdatePathAttributesOrigin *>(msg.getPathAttributes(i));
+                    entry->setPathType(origin->getValue());
+                    break;
+                }
+                case BgpUpdateAttributeTypeCode::AS_PATH: {
+                    auto& asPath = *check_and_cast<const BgpUpdatePathAttributesAsPath *>(msg.getPathAttributes(i));
+                    for (size_t k = 0; k < asPath.getValueArraySize(); k++) {
+                        const BgpAsPathSegment& asPathVal = asPath.getValue(k);
+                        for (size_t n = 0; n < asPathVal.getAsValueArraySize(); n++)
+                            entry->addAS(asPathVal.getAsValue(n));
+                    }
+                    break;
+                }
+                case BgpUpdateAttributeTypeCode::LOCAL_PREF: {
+                    auto localPref = check_and_cast<const BgpUpdatePathAttributesLocalPref *>(msg.getPathAttributes(i));
+                    entry->setLocalPreference(localPref->getValue());
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        BgpProcessResult decisionProcessResult = asLoopDetection(entry, myAsId);
+        if (decisionProcessResult == ASLOOP_NO_DETECTED)
+            decisionProcess(entry, sessionIndex);
+        else
+            delete entry;
+    }
 }
 
 /* add entry to routing table, or delete entry */
@@ -924,6 +1054,92 @@ void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex,
     }
 }
 
+void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex, BgpIpv6RoutingTableEntry *entry)
+{
+    BgpAddressFamily ipv6Unicast = makeAddressFamily(AFI_IPV6, SAFI_UNICAST);
+    for (auto& elem : _BGPSessions) {
+        BgpSession *targetSession = elem.second;
+        bool isSourceSession = elem.first == sessionIndex;
+        bool isStartupAdvertisement = type == NEW_SESSION_ESTABLISHED;
+        bool isOtherStartupSession = isStartupAdvertisement && !isSourceSession;
+
+        if ((isSourceSession && !isStartupAdvertisement) ||
+            isOtherStartupSession ||
+            !targetSession->isEstablished())
+            continue;
+
+        if (!targetSession->hasNegotiatedAddressFamily(ipv6Unicast)) {
+            EV_INFO << "Not advertising IPv6 route " << entry->getDestination() << "/"
+                    << entry->getPrefixLength() << " to peer "
+                    << targetSession->getPeerAddr().str(false)
+                    << " because IPv6-unicast was not negotiated\n";
+            continue;
+        }
+
+        BgpSessionType sourceSessionType = _BGPSessions[sessionIndex]->getType();
+        if (entry->isIBgpLearned() && sourceSessionType == IGP && targetSession->getType() == IGP) {
+            EV_INFO << "BGP Split Horizon: prevent advertisement of IPv6 network "
+                    << entry->getDestination() << "/" << entry->getPrefixLength();
+            continue;
+        }
+
+        std::vector<BgpUpdatePathAttributes *> content;
+
+        auto originAttr = new BgpUpdatePathAttributesOrigin;
+        content.push_back(originAttr);
+        originAttr->setValue((BgpSessionType)entry->getPathType());
+
+        unsigned int nbAS = entry->getASCount();
+        auto asPath = new BgpUpdatePathAttributesAsPath();
+        content.push_back(asPath);
+        asPath->setValueArraySize(1);
+        asPath->getValueForUpdate(0).setType(AS_SEQUENCE);
+        asPath->getValueForUpdate(0).setLength(0);
+
+        if (targetSession->getType() == EGP) {
+            bool prependMyAs = nbAS == 0 || entry->getAS(0) != myAsId;
+            asPath->getValueForUpdate(0).setAsValueArraySize(nbAS + (prependMyAs ? 1 : 0));
+            asPath->getValueForUpdate(0).setLength(nbAS + (prependMyAs ? 1 : 0));
+            unsigned int outputIndex = 0;
+            if (prependMyAs) {
+                asPath->getValueForUpdate(0).setAsValue(outputIndex, myAsId);
+                outputIndex++;
+            }
+            for (unsigned int j = 0; j < nbAS; j++, outputIndex++)
+                asPath->getValueForUpdate(0).setAsValue(outputIndex, entry->getAS(j));
+        }
+        else if (targetSession->getType() == IGP) {
+            asPath->getValueForUpdate(0).setAsValueArraySize(nbAS);
+            asPath->getValueForUpdate(0).setLength(nbAS);
+            for (unsigned int j = 0; j < nbAS; j++)
+                asPath->getValueForUpdate(0).setAsValue(j, entry->getAS(j));
+
+            auto localPref = new BgpUpdatePathAttributesLocalPref();
+            content.push_back(localPref);
+            localPref->setLength(4);
+            localPref->setValue(_BGPSessions[sessionIndex]->getLocalPreference());
+        }
+        asPath->setLength(2 + 2 * asPath->getValue(0).getAsValueArraySize());
+
+        auto mpReach = new BgpUpdatePathAttributesMpReachNlri();
+        content.push_back(mpReach);
+        mpReach->setAfi(AFI_IPV6);
+        mpReach->setSafi(SAFI_UNICAST);
+        mpReach->setNextHopNetworkAddressLength(16);
+        mpReach->setNextHopIpv6Address(entry->getNextHop());
+        mpReach->setNumberOfSnpas(0);
+
+        BgpMpNlri nlri;
+        nlri.length = entry->getPrefixLength();
+        nlri.ipv6Prefix = entry->getDestination();
+        mpReach->setNlriArraySize(1);
+        mpReach->setNlri(0, nlri);
+        mpReach->setLength(2 + 1 + 1 + 16 + 1 + 1 + (entry->getPrefixLength() + 7) / 8);
+
+        targetSession->sendUpdateMessage(content);
+    }
+}
+
 /*
  *  Delete BGP Routing entry, if the route deleted correctly return true, false else.
  *  Side effects when returns true:
@@ -1136,7 +1352,15 @@ void BgpRouter::printUpdateMessage(const BgpUpdateMessage& updateMsg)
             case BgpUpdateAttributeTypeCode::MP_REACH_NLRI: {
                 auto& attr = *check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(updateMsg.getPathAttributes(i));
                 EV_INFO << "    MP_REACH_NLRI: AFI " << attr.getAfi() << " SAFI " << attr.getSafi()
+                        << " next hop " << attr.getNextHopIpv6Address()
                         << " NLRI count " << attr.getNlriArraySize() << "\n";
+                for (size_t routeIndex = 0; routeIndex < attr.getNlriArraySize(); routeIndex++) {
+                    const BgpMpNlri& nlri = attr.getNlri(routeIndex);
+                    if (attr.getAfi() == AFI_IPV6)
+                        EV_INFO << "      NLRI: " << nlri.ipv6Prefix << "/" << (int)nlri.length << "\n";
+                    else
+                        EV_INFO << "      NLRI: " << nlri.ipv4Prefix << "/" << (int)nlri.length << "\n";
+                }
                 break;
             }
             case BgpUpdateAttributeTypeCode::MP_UNREACH_NLRI: {

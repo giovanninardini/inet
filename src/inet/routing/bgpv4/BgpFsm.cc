@@ -424,6 +424,9 @@ void Established::entry()
     for (auto& elem : session.getBGPRoutingTable())
         session.updateSendProcess(elem);
 
+    for (auto& elem : session.getBGPIpv6RoutingTable())
+        session.updateSendProcess(elem);
+
     // when all EGP Sessions are in established state, start IGP Session(s)
     SessionId nextSession = session.findAndStartNextSession(EGP);
     if (nextSession == static_cast<SessionId>(-1)) {

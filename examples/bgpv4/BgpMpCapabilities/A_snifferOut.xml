@@ -15,6 +15,11 @@
     <message occurence="1">
         <fieldValue name="name" value="BgpOpen"/>
     </message>
-    <message occurence="1"/>
-    <message occurence="1"/>
+    <message occurence="1"/> <!-- ABORT -->
+    <message occurence="1">
+        <fieldValue name="name" value="BgpKeepAlive"/>
+    </message>
+    <message occurence="1">
+        <fieldValue name="name" value="BgpUpdate"/>
+    </message>
 </checker>

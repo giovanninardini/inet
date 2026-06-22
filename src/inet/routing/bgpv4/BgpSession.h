@@ -77,6 +77,7 @@ public:
 
     void sendOpenMessage();
     void sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& content, BgpUpdateNlri& NLRI);
+    void sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& content);
     void sendNotificationMessage();
     void sendKeepAliveMessage();
 
@@ -121,8 +122,10 @@ public:
     bool hasNegotiatedAddressFamily(const BgpAddressFamily& family) const;
     IIpv4RoutingTable *getIPRoutingTable() const { return bgpRouter.getIPRoutingTable(); }
     std::vector<BgpRoutingTableEntry *> getBGPRoutingTable() const { return bgpRouter.getBGPRoutingTable(); }
+    std::vector<BgpIpv6RoutingTableEntry *> getBGPIpv6RoutingTable() const { return bgpRouter.getBGPIpv6RoutingTable(); }
     Macho::Machine<fsm::TopState>& getFSM() const { return *_fsm; }
     void updateSendProcess(BgpRoutingTableEntry *entry) const { return bgpRouter.updateSendProcess(NEW_SESSION_ESTABLISHED, _info.sessionID, entry); }
+    void updateSendProcess(BgpIpv6RoutingTableEntry *entry) const { return bgpRouter.updateSendProcess(NEW_SESSION_ESTABLISHED, _info.sessionID, entry); }
     bool isRouteExcluded(const Ipv4Route& rtEntry) const { return bgpRouter.isRouteExcluded(rtEntry); }
 };
 

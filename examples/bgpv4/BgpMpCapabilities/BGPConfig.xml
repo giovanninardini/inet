@@ -11,6 +11,7 @@
 
     <AS id="65324">
         <Router interAddr="10.10.10.1" addressFamilies="ipv6-unicast">
+            <Network address="2001:db8:1::/64" afi="ipv6" safi="unicast" nextHop="2001:db8::1"/>
             <Neighbor address="10.10.10.2" addressFamilies="ipv6-unicast"/>
         </Router>
     </AS>

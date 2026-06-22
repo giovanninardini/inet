@@ -42,6 +42,33 @@ static void normalizeAddressFamilyToken(std::string& token)
     std::replace(token.begin(), token.end(), '.', '-');
 }
 
+static Ipv6Address parseIpv6Prefix(const cXMLElement& networkConfig, const char *address, int& prefixLength)
+{
+    Ipv6Address prefix;
+    if (prefix.tryParseAddrWithPrefix(address, prefixLength))
+        return prefix;
+
+    const char *prefixLengthAttr = networkConfig.getAttribute("prefixLength");
+    if (!prefixLengthAttr || !*prefixLengthAttr)
+        throw cRuntimeError("BGP Error: IPv6 Network '%s' must include '/prefixLength' or a 'prefixLength' attribute at %s",
+                address, networkConfig.getSourceLocation());
+
+    prefixLength = atoi(prefixLengthAttr);
+    if (prefixLength < 0 || prefixLength > 128)
+        throw cRuntimeError("BGP Error: invalid IPv6 prefix length %d at %s", prefixLength, networkConfig.getSourceLocation());
+
+    prefix.set(address);
+    return prefix;
+}
+
+static Ipv6Address parseIpv6NextHop(const cXMLElement& networkConfig)
+{
+    const char *nextHop = networkConfig.getAttribute("nextHop");
+    if (nextHop && *nextHop)
+        return Ipv6Address(nextHop);
+    return Ipv6Address::UNSPECIFIED_ADDRESS;
+}
+
 BgpConfigReader::BgpConfigReader(cModule *bgpModule, IInterfaceTable *ift) :
     bgpModule(bgpModule), ift(ift)
 {
@@ -256,9 +283,11 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
                                 if (family.afi == AFI_IPV4 && family.safi == SAFI_UNICAST)
                                     bgpRouter->addToAdvertiseList(Ipv4Address(address));
                                 else if (isIpv6Unicast(family)) {
-                                    Ipv6Address ipv6Address(address);
-                                    (void)ipv6Address;
+                                    int prefixLength = -1;
+                                    Ipv6Address prefix = parseIpv6Prefix(*entry, address, prefixLength);
+                                    Ipv6Address nextHop = parseIpv6NextHop(*entry);
                                     bgpRouter->addAddressFamily(family);
+                                    bgpRouter->addToAdvertiseIpv6List(prefix, prefixLength, nextHop);
                                 }
                                 else
                                     throw cRuntimeError("BGP Error: unsupported Network address family at %s", entry->getSourceLocation());
