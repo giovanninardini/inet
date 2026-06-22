@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<checker>
+    <message occurence="1"/>
+    <message occurence="1">
+        <fieldValue name="byteLength" value="37"/>
+    </message>
+    <message occurence="1"/>
+</checker>
