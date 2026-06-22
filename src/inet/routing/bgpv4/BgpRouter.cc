@@ -14,6 +14,74 @@
 namespace inet {
 namespace bgp {
 
+static bool containsAddressFamily(const std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
+{
+    return std::find(families.begin(), families.end(), family) != families.end();
+}
+
+static void appendAddressFamily(std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
+{
+    if (!containsAddressFamily(families, family))
+        families.push_back(family);
+}
+
+static BgpAddressFamily makeAddressFamily(uint16_t afi, uint8_t safi)
+{
+    BgpAddressFamily family;
+    family.afi = afi;
+    family.safi = safi;
+    return family;
+}
+
+static std::string addressFamilyToString(const BgpAddressFamily& family)
+{
+    std::string afi;
+    if (family.afi == AFI_IPV4)
+        afi = "ipv4";
+    else if (family.afi == AFI_IPV6)
+        afi = "ipv6";
+    else
+        afi = std::to_string(family.afi);
+
+    std::string safi;
+    if (family.safi == SAFI_UNICAST)
+        safi = "unicast";
+    else if (family.safi == SAFI_MULTICAST)
+        safi = "multicast";
+    else
+        safi = std::to_string(family.safi);
+
+    return afi + "-" + safi;
+}
+
+static std::vector<BgpAddressFamily> getMultiprotocolCapabilities(const BgpOpenMessage& msg)
+{
+    std::vector<BgpAddressFamily> families;
+    for (size_t i = 0; i < msg.getOptionalParameterArraySize(); i++) {
+        auto parameter = msg.getOptionalParameter(i);
+        if (parameter->getParameterType() != BGP_OPTIONAL_PARAMETER_CAPABILITIES)
+            continue;
+
+        auto capabilities = dynamic_cast<const BgpOptionalParameterCapabilities *>(parameter);
+        if (capabilities == nullptr)
+            continue;
+
+        for (size_t j = 0; j < capabilities->getCapabilityArraySize(); j++) {
+            auto capability = capabilities->getCapability(j);
+            if (capability->getCapabilityCode() != BGP_CAPABILITY_MULTIPROTOCOL)
+                continue;
+
+            auto multiprotocol = dynamic_cast<const BgpCapabilityMultiprotocol *>(capability);
+            if (multiprotocol == nullptr)
+                continue;
+
+            auto family = makeAddressFamily(multiprotocol->getAfi(), multiprotocol->getSafi());
+            appendAddressFamily(families, family);
+        }
+    }
+    return families;
+}
+
 BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4RoutingTable *rt)
 {
     this->bgpModule = bgpModule;
@@ -95,12 +163,18 @@ void BgpRouter::closeSessions(bool abort)
         TcpSocket *socket = elem.second->getSocket();
         if (socket) {
             _socketMap.removeSocket(socket);
-            abort ? socket->abort() : socket->close();
+            if (abort)
+                socket->abort();
+            else
+                socket->close();
         }
         TcpSocket *socketListen = elem.second->getSocketListen();
         if (socketListen) {
             _socketMap.removeSocket(socketListen);
-            abort ? socketListen->abort() : socketListen->close();
+            if (abort)
+                socketListen->abort();
+            else
+                socketListen->close();
         }
     }
 }
@@ -217,6 +291,42 @@ void BgpRouter::addToAdvertiseList(Ipv4Address address)
     BGPEntry->setPathType(IGP);
     BGPEntry->setLocalPreference(bgpModule->par("localPreference").intValue());
     bgpRoutingTable.push_back(BGPEntry);
+}
+
+void BgpRouter::addAddressFamily(const BgpAddressFamily& family)
+{
+    appendAddressFamily(addressFamilies, family);
+}
+
+void BgpRouter::setPeerAddressFamilies(Ipv4Address peer, const std::vector<BgpAddressFamily>& families)
+{
+    bool found = false;
+    for (auto& session : _BGPSessions) {
+        if (session.second->getPeerAddr() == peer) {
+            found = true;
+            session.second->setLocalAddressFamilies(families, true);
+            break;
+        }
+    }
+    if (!found)
+        throw cRuntimeError("Neighbor address '%s' cannot be found in BGP router %s", peer.str(false).c_str(), bgpModule->getOwner()->getFullName());
+}
+
+void BgpRouter::applyAddressFamilyDefaults()
+{
+    for (auto& session : _BGPSessions) {
+        if (session.second->hasExplicitLocalAddressFamilies()) {
+            for (auto family : session.second->getLocalAddressFamilies()) {
+                if (!containsAddressFamily(addressFamilies, family))
+                    throw cRuntimeError("BGP address family '%s' for neighbor %s is not configured locally on router %s",
+                            addressFamilyToString(family).c_str(),
+                            session.second->getPeerAddr().str(false).c_str(),
+                            bgpModule->getOwner()->getFullName());
+            }
+        }
+        else
+            session.second->setLocalAddressFamilies(addressFamilies, false);
+    }
 }
 
 void BgpRouter::addToPrefixList(std::string nodeName, BgpRoutingTableEntry *entry)
@@ -496,6 +606,13 @@ void BgpRouter::processMessage(const BgpOpenMessage& msg)
             << session->getPeerAddr().str(false)
             << " with contents: \n";
     printOpenMessage(msg);
+
+    auto peerAddressFamilies = getMultiprotocolCapabilities(msg);
+    session->setPeerAddressFamilies(peerAddressFamilies);
+    for (auto family : session->getNegotiatedAddressFamilies())
+        EV_INFO << "Negotiated MP-BGP address family " << addressFamilyToString(family)
+                << " with peer " << session->getPeerAddr().str(false) << "\n";
+
     session->getFSM()->OpenMsgEvent();
 }
 
@@ -937,6 +1054,24 @@ void BgpRouter::printOpenMessage(const BgpOpenMessage& openMsg)
         EV_INFO << "  Optional parameter " << i + 1 << ": \n";
         EV_INFO << "    Parameter type: " << optParam->getParameterType() << "\n";
         EV_INFO << "    Parameter length: " << optParam->getParameterValueLength() << "\n";
+        if (optParam->getParameterType() == BGP_OPTIONAL_PARAMETER_CAPABILITIES) {
+            auto capabilities = dynamic_cast<const BgpOptionalParameterCapabilities *>(optParam);
+            if (capabilities != nullptr) {
+                for (size_t j = 0; j < capabilities->getCapabilityArraySize(); j++) {
+                    auto capability = capabilities->getCapability(j);
+                    EV_INFO << "    Capability " << j + 1 << ": code " << (int)capability->getCapabilityCode()
+                            << " length " << (int)capability->getCapabilityLength();
+                    if (capability->getCapabilityCode() == BGP_CAPABILITY_MULTIPROTOCOL) {
+                        auto multiprotocol = dynamic_cast<const BgpCapabilityMultiprotocol *>(capability);
+                        if (multiprotocol != nullptr) {
+                            auto family = makeAddressFamily(multiprotocol->getAfi(), multiprotocol->getSafi());
+                            EV_INFO << " " << addressFamilyToString(family);
+                        }
+                    }
+                    EV_INFO << "\n";
+                }
+            }
+        }
     }
 }
 

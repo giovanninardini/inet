@@ -6,12 +6,61 @@
 
 #include "inet/routing/bgpv4/BgpSession.h"
 
+#include <algorithm>
+
 #include "inet/routing/bgpv4/Bgp.h"
 #include "inet/routing/bgpv4/BgpFsm.h"
 #include "inet/routing/bgpv4/bgpmessage/BgpUpdate.h"
 
 namespace inet {
 namespace bgp {
+
+static bool containsAddressFamily(const std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
+{
+    return std::find(families.begin(), families.end(), family) != families.end();
+}
+
+static void appendAddressFamily(std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
+{
+    if (!containsAddressFamily(families, family))
+        families.push_back(family);
+}
+
+static const char *boolToString(bool value)
+{
+    if (value)
+        return "true";
+    else
+        return "false";
+}
+
+static BgpCapabilityMultiprotocol *createMultiprotocolCapability(const BgpAddressFamily& family)
+{
+    auto *capability = new BgpCapabilityMultiprotocol();
+    capability->setAfi(static_cast<BgpAddressFamilyIdentifier>(family.afi));
+    capability->setSafi(static_cast<BgpSubsequentAddressFamilyIdentifier>(family.safi));
+    return capability;
+}
+
+static BgpOptionalParameterCapabilities *createCapabilitiesParameter(const std::vector<BgpAddressFamily>& families)
+{
+    auto *parameter = new BgpOptionalParameterCapabilities();
+    parameter->setCapabilityArraySize(families.size());
+    for (size_t i = 0; i < families.size(); i++)
+        parameter->setCapability(i, createMultiprotocolCapability(families[i]));
+    parameter->setParameterValueLength(families.size() * 6);
+    return parameter;
+}
+
+static void addCapabilitiesParameter(BgpOpenMessage& openMsg, const std::vector<BgpAddressFamily>& families)
+{
+    auto *parameter = createCapabilitiesParameter(families);
+    openMsg.setOptionalParameterArraySize(1);
+    openMsg.setOptionalParameter(0, parameter);
+    openMsg.setOptionalParametersLength(parameter->getParameterValueLength() + 2);
+    openMsg.setChunkLength(BGP_HEADER_OCTETS + BGP_OPEN_OCTETS + B(openMsg.getOptionalParametersLength()));
+    openMsg.setTotalLength(openMsg.getChunkLength().get<B>());
+}
 
 BgpSession::BgpSession(BgpRouter& bgpRouter) : bgpRouter(bgpRouter)
 {
@@ -112,6 +161,8 @@ void BgpSession::sendOpenMessage()
     openMsg->setMyAS(_info.ASValue);
     openMsg->setHoldTime(_holdTime);
     openMsg->setBGPIdentifier(_info.socket->getLocalAddress().toIpv4());
+    if (!_localAddressFamilies.empty())
+        addCapabilitiesParameter(*openMsg, _localAddressFamilies);
 
     EV_INFO << "Sending BGP Open message to " << _info.peerAddr.str(false)
             << " on interface " << _info.linkIntf->getInterfaceName()
@@ -123,6 +174,32 @@ void BgpSession::sendOpenMessage()
 
     _info.socket->send(pk);
     _openMsgSent++;
+}
+
+void BgpSession::setLocalAddressFamilies(const std::vector<BgpAddressFamily>& families, bool explicitConfig)
+{
+    _localAddressFamilies.clear();
+    for (auto family : families)
+        appendAddressFamily(_localAddressFamilies, family);
+    _localAddressFamiliesConfigured = explicitConfig;
+}
+
+void BgpSession::setPeerAddressFamilies(const std::vector<BgpAddressFamily>& families)
+{
+    _peerAddressFamilies.clear();
+    for (auto family : families)
+        appendAddressFamily(_peerAddressFamilies, family);
+
+    _negotiatedAddressFamilies.clear();
+    for (auto family : _localAddressFamilies) {
+        if (containsAddressFamily(_peerAddressFamilies, family))
+            _negotiatedAddressFamilies.push_back(family);
+    }
+}
+
+bool BgpSession::hasNegotiatedAddressFamily(const BgpAddressFamily& family) const
+{
+    return containsAddressFamily(_negotiatedAddressFamilies, family);
 }
 
 void BgpSession::sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& content, BgpUpdateNlri& NLRI)
@@ -216,10 +293,13 @@ std::ostream& operator<<(std::ostream& out, const BgpSession& entry)
 {
     out << "sessionId: " << entry.getSessionID() << " "
         << "sessionType: " << entry.getTypeString(entry.getType()) << " "
-        << "established: " << (entry.isEstablished() == true ? "true" : "false") << " "
+        << "established: " << boolToString(entry.isEstablished()) << " "
         << "state: " << entry.getFSM().currentState().name() << " "
         << "peer: " << entry.getPeerAddr().str(false) << " "
-        << "nextHopSelf: " << (entry.getNextHopSelf() == true ? "true" : "false") << " "
+        << "nextHopSelf: " << boolToString(entry.getNextHopSelf()) << " "
+        << "localAddressFamilies: " << entry.getLocalAddressFamilies().size() << " "
+        << "peerAddressFamilies: " << entry.getPeerAddressFamilies().size() << " "
+        << "negotiatedAddressFamilies: " << entry.getNegotiatedAddressFamilies().size() << " "
         << "startEventTime: " << entry.getStartEventTime() << " "
         << "connectionRetryTime: " << entry.getConnectionRetryTime() << " "
         << "holdTime: " << entry.getHoldTime() << " "

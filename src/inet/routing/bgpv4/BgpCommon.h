@@ -7,6 +7,8 @@
 #ifndef __INET_BGPCOMMON_H
 #define __INET_BGPCOMMON_H
 
+#include <vector>
+
 #include "inet/networklayer/common/NetworkInterface.h"
 #include "inet/networklayer/ipv4/Ipv4Header_m.h"
 #include "inet/routing/bgpv4/BgpCommon_m.h"
@@ -19,6 +21,15 @@ typedef Ipv4Address RouterId;
 typedef Ipv4Address NextHop;
 typedef unsigned short AsId;
 typedef unsigned long SessionId;
+
+struct BgpAddressFamily
+{
+    uint16_t afi = 0;
+    uint8_t safi = 0;
+
+    bool operator==(const BgpAddressFamily& other) const { return afi == other.afi && safi == other.safi; }
+    bool operator<(const BgpAddressFamily& other) const { return afi < other.afi || (afi == other.afi && safi < other.safi); }
+};
 
 struct SessionInfo
 {
@@ -42,4 +53,3 @@ struct SessionInfo
 } // namespace inet
 
 #endif
-

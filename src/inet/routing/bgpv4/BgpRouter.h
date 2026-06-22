@@ -51,6 +51,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     typedef std::vector<BgpRoutingTableEntry *> RoutingTableEntryVector;
     RoutingTableEntryVector bgpRoutingTable; // The BGP routing table
     std::vector<Ipv4Address> advertiseList;
+    std::vector<BgpAddressFamily> addressFamilies;
     RoutingTableEntryVector _prefixListIN;
     RoutingTableEntryVector _prefixListOUT;
     RoutingTableEntryVector _prefixListINOUT; // store union of pointers in _prefixListIN and _prefixListOUT
@@ -87,6 +88,9 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void setTimer(SessionId id, simtime_t *delayTab);
     void setSocketListen(SessionId id);
     void addToAdvertiseList(Ipv4Address address);
+    void addAddressFamily(const BgpAddressFamily& family);
+    void setPeerAddressFamilies(Ipv4Address peer, const std::vector<BgpAddressFamily>& families);
+    void applyAddressFamilyDefaults();
     void addToPrefixList(std::string nodeName, BgpRoutingTableEntry *entry);
     void addToAsList(std::string nodeName, AsId id);
     void setNextHopSelf(Ipv4Address peer, bool nextHopSelf);

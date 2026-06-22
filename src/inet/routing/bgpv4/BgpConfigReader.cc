@@ -6,12 +6,41 @@
 
 #include "inet/routing/bgpv4/BgpConfigReader.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+
 #include "inet/common/ModuleAccess.h"
 #include "inet/routing/bgpv4/BgpSession.h"
 
 namespace inet {
 
 namespace bgp {
+
+static bool isIpv6Unicast(const BgpAddressFamily& family)
+{
+    return family.afi == AFI_IPV6 && family.safi == SAFI_UNICAST;
+}
+
+static char toLowerCase(char ch)
+{
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+}
+
+static std::string toLowerCaseString(std::string value)
+{
+    for (auto& ch : value)
+        ch = toLowerCase(ch);
+    return value;
+}
+
+static void normalizeAddressFamilyToken(std::string& token)
+{
+    token = toLowerCaseString(token);
+    std::replace(token.begin(), token.end(), '/', '-');
+    std::replace(token.begin(), token.end(), '.', '-');
+}
 
 BgpConfigReader::BgpConfigReader(cModule *bgpModule, IInterfaceTable *ift) :
     bgpModule(bgpModule), ift(ift)
@@ -206,15 +235,35 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
                 bgpRouter->setRedistributeInternal(getBoolAttrOrPar(*elem, "redistributeInternal"));
                 bgpRouter->setRedistributeOspf(getStrAttrOrPar(*elem, "redistributeOspf"));
                 bgpRouter->setRedistributeRip(getBoolAttrOrPar(*elem, "redistributeRip"));
+                for (auto family : getAddressFamilyAttr(*elem)) {
+                    if (!isIpv6Unicast(family))
+                        throw cRuntimeError("BGP Error: only ipv6-unicast is supported as MP-BGP router address family at %s", elem->getSourceLocation());
+                    bgpRouter->addAddressFamily(family);
+                }
 
                 for (auto& entry : elem->getChildren()) {
                     std::string nodeName = entry->getTagName();
                     if (nodeName == "Network") {
                         const char *address = entry->getAttribute("address");
-                        if (address && *address)
-                            bgpRouter->addToAdvertiseList(Ipv4Address(address));
-                        else
+                        if (!address || !*address)
                             throw cRuntimeError("BGP Error: attribute 'address' is mandatory in 'Network'");
+
+                        auto families = getAddressFamilyAttr(*entry);
+                        if (families.empty())
+                            bgpRouter->addToAdvertiseList(Ipv4Address(address));
+                        else {
+                            for (auto family : families) {
+                                if (family.afi == AFI_IPV4 && family.safi == SAFI_UNICAST)
+                                    bgpRouter->addToAdvertiseList(Ipv4Address(address));
+                                else if (isIpv6Unicast(family)) {
+                                    Ipv6Address ipv6Address(address);
+                                    (void)ipv6Address;
+                                    bgpRouter->addAddressFamily(family);
+                                }
+                                else
+                                    throw cRuntimeError("BGP Error: unsupported Network address family at %s", entry->getSourceLocation());
+                            }
+                        }
                     }
                     else if (nodeName == "Neighbor") {
                         const char *peer = entry->getAttribute("address");
@@ -224,6 +273,14 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
 
                             int localPreference = getIntAttrOrPar(*entry, "localPreference");
                             bgpRouter->setLocalPreference(Ipv4Address(peer), localPreference);
+
+                            auto families = getAddressFamilyAttr(*entry);
+                            for (auto family : families) {
+                                if (!isIpv6Unicast(family))
+                                    throw cRuntimeError("BGP Error: only ipv6-unicast is supported as MP-BGP neighbor address family at %s", entry->getSourceLocation());
+                            }
+                            if (!families.empty())
+                                bgpRouter->setPeerAddressFamilies(Ipv4Address(peer), families);
                         }
                         else
                             throw cRuntimeError("BGP Error: attribute 'address' is mandatory in 'Neighbor'");
@@ -246,6 +303,8 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
         else
             throw cRuntimeError("BGP Error: unknown element named '%s' for AS %u", nodeName.c_str(), bgpRouter->getAsId());
     }
+
+    bgpRouter->applyAddressFamilyDefaults();
 }
 
 int BgpConfigReader::isInInterfaceTable(IInterfaceTable *ifTable, Ipv4Address addr)
@@ -293,6 +352,81 @@ unsigned int BgpConfigReader::calculateStartDelay(int rtListSize, unsigned char 
     return startDelay;
 }
 
+std::vector<BgpAddressFamily> BgpConfigReader::getAddressFamilyAttr(const cXMLElement& ifConfig) const
+{
+    std::vector<BgpAddressFamily> families;
+    const char *addressFamilies = ifConfig.getAttribute("addressFamilies");
+    if (addressFamilies && *addressFamilies) {
+        for (auto token : cStringTokenizer(addressFamilies, " ,;").asVector())
+            families.push_back(parseAddressFamilyToken(token, ifConfig));
+    }
+
+    const char *afi = ifConfig.getAttribute("afi");
+    const char *safi = ifConfig.getAttribute("safi");
+    if ((afi && *afi) || (safi && *safi))
+        families.push_back(parseAddressFamily(afi, safi, ifConfig));
+
+    return families;
+}
+
+BgpAddressFamily BgpConfigReader::parseAddressFamily(const char *afi, const char *safi, const cXMLElement& ifConfig) const
+{
+    if (!afi || !*afi)
+        throw cRuntimeError("BGP Error: attribute 'afi' is mandatory when 'safi' is present at %s", ifConfig.getSourceLocation());
+
+    BgpAddressFamily family;
+    family.afi = parseAfi(afi, ifConfig);
+    family.safi = SAFI_UNICAST;
+    if (safi && *safi)
+        family.safi = parseSafi(safi, ifConfig);
+    return family;
+}
+
+BgpAddressFamily BgpConfigReader::parseAddressFamilyToken(std::string token, const cXMLElement& ifConfig) const
+{
+    normalizeAddressFamilyToken(token);
+
+    BgpAddressFamily family;
+    auto separator = token.find('-');
+    if (separator == std::string::npos) {
+        family.afi = parseAfi(token, ifConfig);
+        family.safi = SAFI_UNICAST;
+    }
+    else {
+        family.afi = parseAfi(token.substr(0, separator), ifConfig);
+        family.safi = parseSafi(token.substr(separator + 1), ifConfig);
+    }
+    return family;
+}
+
+uint16_t BgpConfigReader::parseAfi(std::string afi, const cXMLElement& ifConfig) const
+{
+    afi = toLowerCaseString(afi);
+    if (afi == "ipv4" || afi == "ip")
+        return AFI_IPV4;
+    if (afi == "ipv6")
+        return AFI_IPV6;
+    char *end = nullptr;
+    long value = strtol(afi.c_str(), &end, 10);
+    if (*end == '\0' && value >= 0 && value <= UINT16_MAX)
+        return static_cast<uint16_t>(value);
+    throw cRuntimeError("BGP Error: unknown AFI '%s' at %s", afi.c_str(), ifConfig.getSourceLocation());
+}
+
+uint8_t BgpConfigReader::parseSafi(std::string safi, const cXMLElement& ifConfig) const
+{
+    safi = toLowerCaseString(safi);
+    if (safi == "unicast")
+        return SAFI_UNICAST;
+    if (safi == "multicast")
+        return SAFI_MULTICAST;
+    char *end = nullptr;
+    long value = strtol(safi.c_str(), &end, 10);
+    if (*end == '\0' && value >= 0 && value <= UINT8_MAX)
+        return static_cast<uint8_t>(value);
+    throw cRuntimeError("BGP Error: unknown SAFI '%s' at %s", safi.c_str(), ifConfig.getSourceLocation());
+}
+
 bool BgpConfigReader::getBoolAttrOrPar(const cXMLElement& ifConfig, const char *name) const
 {
     const char *attrStr = ifConfig.getAttribute(name);
@@ -325,4 +459,3 @@ const char *BgpConfigReader::getStrAttrOrPar(const cXMLElement& ifConfig, const 
 } // namespace bgp
 
 } // namespace inet
-

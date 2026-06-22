@@ -41,6 +41,11 @@ class INET_API BgpConfigReader
     int isInInterfaceTable(IInterfaceTable *ifTable, Ipv4Address addr);
     int isInInterfaceTable(IInterfaceTable *ifTable, std::string ifName);
     unsigned int calculateStartDelay(int rtListSize, unsigned char rtPosition, unsigned char rtPeerPosition);
+    std::vector<BgpAddressFamily> getAddressFamilyAttr(const cXMLElement& ifConfig) const;
+    BgpAddressFamily parseAddressFamily(const char *afi, const char *safi, const cXMLElement& ifConfig) const;
+    BgpAddressFamily parseAddressFamilyToken(std::string token, const cXMLElement& ifConfig) const;
+    uint16_t parseAfi(std::string afi, const cXMLElement& ifConfig) const;
+    uint8_t parseSafi(std::string safi, const cXMLElement& ifConfig) const;
     bool getBoolAttrOrPar(const cXMLElement& ifConfig, const char *name) const;
     int getIntAttrOrPar(const cXMLElement& ifConfig, const char *name) const;
     const char *getStrAttrOrPar(const cXMLElement& ifConfig, const char *name) const;
@@ -50,4 +55,3 @@ class INET_API BgpConfigReader
 } // namespace inet
 
 #endif
-

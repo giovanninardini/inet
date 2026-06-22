@@ -49,6 +49,10 @@ public:
     unsigned int _notificationMsgRcv = 0;
     unsigned int _keepAliveMsgSent = 0;
     unsigned int _keepAliveMsgRcv = 0;
+    bool _localAddressFamiliesConfigured = false;
+    std::vector<BgpAddressFamily> _localAddressFamilies;
+    std::vector<BgpAddressFamily> _peerAddressFamilies;
+    std::vector<BgpAddressFamily> _negotiatedAddressFamilies;
 
     // FINAL STATE MACHINE
     fsm::TopState::Box *_box = nullptr;
@@ -88,6 +92,8 @@ public:
     void setLocalPreference(int localPreference) { _info.localPreference = localPreference; }
     void setSocket(TcpSocket *socket) { delete _info.socket; _info.socket = socket; }
     void setSocketListen(TcpSocket *socket) { delete _info.socketListen; _info.socketListen = socket; }
+    void setLocalAddressFamilies(const std::vector<BgpAddressFamily>& families, bool explicitConfig);
+    void setPeerAddressFamilies(const std::vector<BgpAddressFamily>& families);
 
     // getters for accessing session information:
     simtime_t getStartEventTime() const { return _StartEventTime; }
@@ -108,6 +114,11 @@ public:
     TcpSocket *getSocket() const { return _info.socket; }
     TcpSocket *getSocketListen() const { return _info.socketListen; }
     int getEbgpMultihop() const { return _info.ebgpMultihop; }
+    bool hasExplicitLocalAddressFamilies() const { return _localAddressFamiliesConfigured; }
+    const std::vector<BgpAddressFamily>& getLocalAddressFamilies() const { return _localAddressFamilies; }
+    const std::vector<BgpAddressFamily>& getPeerAddressFamilies() const { return _peerAddressFamilies; }
+    const std::vector<BgpAddressFamily>& getNegotiatedAddressFamilies() const { return _negotiatedAddressFamilies; }
+    bool hasNegotiatedAddressFamily(const BgpAddressFamily& family) const;
     IIpv4RoutingTable *getIPRoutingTable() const { return bgpRouter.getIPRoutingTable(); }
     std::vector<BgpRoutingTableEntry *> getBGPRoutingTable() const { return bgpRouter.getBGPRoutingTable(); }
     Macho::Machine<fsm::TopState>& getFSM() const { return *_fsm; }
