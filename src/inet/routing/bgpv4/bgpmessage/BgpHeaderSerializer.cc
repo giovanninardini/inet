@@ -7,6 +7,8 @@
 
 #include "inet/routing/bgpv4/bgpmessage/BgpHeaderSerializer.h"
 
+#include <algorithm>
+
 #include "inet/common/packet/serializer/ChunkSerializerRegistry.h"
 #include "inet/routing/bgpv4/bgpmessage/BgpHeader_m.h"
 #include "inet/routing/bgpv4/bgpmessage/BgpUpdate.h"
@@ -18,6 +20,100 @@ Register_Serializer(BgpHeader, BgpHeaderSerializer);
 Register_Serializer(BgpKeepAliveMessage, BgpHeaderSerializer);
 Register_Serializer(BgpOpenMessage, BgpHeaderSerializer);
 Register_Serializer(BgpUpdateMessage, BgpHeaderSerializer);
+
+static unsigned int getPrefixBytes(uint8_t prefixLength)
+{
+    return (prefixLength + 7) / 8;
+}
+
+static void writeIpv6Prefix(MemoryOutputStream& stream, const Ipv6Address& address, uint8_t prefixLength)
+{
+    if (prefixLength > 128)
+        throw cRuntimeError("Cannot serialize BGP UPDATE Message: IPv6 prefix length must be no greater than 128.");
+
+    const uint32_t *words = address.words();
+    unsigned int remainingBits = prefixLength;
+    for (int i = 0; i < 4 && remainingBits > 0; i++) {
+        uint32_t word = words[i];
+        uint8_t bits = std::min(remainingBits, 32U);
+        stream.writeNBitsOfUint64Be(word >> (32 - bits), bits);
+        remainingBits -= bits;
+    }
+    if (prefixLength % 8 != 0)
+        stream.writeBitRepeatedly(0, 8 - (prefixLength % 8));
+}
+
+static Ipv6Address readIpv6Prefix(MemoryInputStream& stream, uint8_t prefixLength)
+{
+    if (prefixLength > 128)
+        throw cRuntimeError("Cannot deserialize BGP UPDATE Message: IPv6 prefix length must be no greater than 128.");
+
+    uint32_t words[4] = {};
+    unsigned int remainingBits = prefixLength;
+    for (int i = 0; i < 4 && remainingBits > 0; i++) {
+        uint8_t bits = std::min(remainingBits, 32U);
+        words[i] = stream.readNBitsToUint64Be(bits) << (32 - bits);
+        remainingBits -= bits;
+    }
+    if (prefixLength % 8 != 0)
+        stream.readBitRepeatedly(0, 8 - (prefixLength % 8));
+    return Ipv6Address(words[0], words[1], words[2], words[3]);
+}
+
+static void writeMpNlri(MemoryOutputStream& stream, const BgpMpNlri& nlri, BgpAddressFamilyIdentifier afi)
+{
+    uint8_t length = nlri.length;
+    stream.writeByte(length);
+    switch (afi) {
+        case AFI_IPV4:
+            if (length > 32)
+                throw cRuntimeError("Cannot serialize BGP UPDATE Message: IPv4 prefix length must be no greater than 32.");
+            if (length > 0)
+                stream.writeNBitsOfUint64Be(nlri.ipv4Prefix.getInt() >> (32 - length), length);
+            if (length % 8 != 0)
+                stream.writeBitRepeatedly(0, 8 - (length % 8));
+            break;
+        case AFI_IPV6:
+            writeIpv6Prefix(stream, nlri.ipv6Prefix, length);
+            break;
+        default:
+            throw cRuntimeError("Cannot serialize BGP UPDATE Message: unsupported MP-BGP AFI %d.", afi);
+    }
+}
+
+static BgpMpNlri readMpNlri(MemoryInputStream& stream, BgpAddressFamilyIdentifier afi)
+{
+    BgpMpNlri nlri;
+    uint8_t length = stream.readByte();
+    nlri.length = length;
+    switch (afi) {
+        case AFI_IPV4: {
+            if (length > 32)
+                throw cRuntimeError("Cannot deserialize BGP UPDATE Message: IPv4 prefix length must be no greater than 32.");
+            uint32_t prefix = length == 0 ? 0 : stream.readNBitsToUint64Be(length);
+            nlri.ipv4Prefix = Ipv4Address(length == 0 ? 0 : prefix << (32 - length));
+            if (length % 8 != 0)
+                stream.readBitRepeatedly(0, 8 - (length % 8));
+            break;
+        }
+        case AFI_IPV6:
+            nlri.ipv6Prefix = readIpv6Prefix(stream, length);
+            break;
+        default:
+            throw cRuntimeError("Cannot deserialize BGP UPDATE Message: unsupported MP-BGP AFI %d.", afi);
+    }
+    return nlri;
+}
+
+static unsigned int getMpNlriBytes(const BgpMpNlri& nlri)
+{
+    return 1 + getPrefixBytes(nlri.length);
+}
+
+static unsigned int getCapabilityBytes(const BgpCapabilityBase& capability)
+{
+    return 2 + capability.getCapabilityLength();
+}
 
 void BgpHeaderSerializer::serialize(MemoryOutputStream& stream, const Ptr<const Chunk>& chunk) const
 {
@@ -53,12 +149,43 @@ void BgpHeaderSerializer::serialize(MemoryOutputStream& stream, const Ptr<const 
             stream.writeByte(optionalParametersLength);
             unsigned short numOptionalParametersBytes = 0;
             for (size_t i = 0; i < bgpOpenMessage->getOptionalParameterArraySize(); ++i) {
-                const BgpOptionalParameterRaw *optionalParameter = static_cast<const BgpOptionalParameterRaw *>(bgpOpenMessage->getOptionalParameter(i));
+                const BgpOptionalParameterBase *optionalParameter = bgpOpenMessage->getOptionalParameter(i);
                 stream.writeByte(optionalParameter->getParameterType());
                 unsigned short parameterValueLength = optionalParameter->getParameterValueLength();
                 stream.writeByte(parameterValueLength);
-                for (size_t e = 0; optionalParameter->getValueArraySize(); ++e) {
-                    stream.writeByte(optionalParameter->getValue(e));
+                if (optionalParameter->getParameterType() == BGP_OPTIONAL_PARAMETER_CAPABILITIES) {
+                    const BgpOptionalParameterCapabilities *capabilitiesParameter = check_and_cast<const BgpOptionalParameterCapabilities *>(optionalParameter);
+                    unsigned short capabilitiesLength = 0;
+                    for (size_t e = 0; e < capabilitiesParameter->getCapabilityArraySize(); ++e) {
+                        const BgpCapabilityBase *capability = capabilitiesParameter->getCapability(e);
+                        capabilitiesLength += getCapabilityBytes(*capability);
+                        stream.writeByte(capability->getCapabilityCode());
+                        stream.writeByte(capability->getCapabilityLength());
+                        switch (capability->getCapabilityCode()) {
+                            case BGP_CAPABILITY_MULTIPROTOCOL: {
+                                const BgpCapabilityMultiprotocol *multiprotocol = check_and_cast<const BgpCapabilityMultiprotocol *>(capability);
+                                if (multiprotocol->getCapabilityLength() != 4)
+                                    throw cRuntimeError("Cannot serialize BGP OPEN Message: Multiprotocol capability length must be 4.");
+                                stream.writeUint16Be(multiprotocol->getAfi());
+                                stream.writeByte(multiprotocol->getReserved());
+                                stream.writeByte(multiprotocol->getSafi());
+                                break;
+                            }
+                            default: {
+                                const BgpCapabilityRaw *raw = check_and_cast<const BgpCapabilityRaw *>(capability);
+                                for (size_t k = 0; k < raw->getValueArraySize(); ++k)
+                                    stream.writeByte(raw->getValue(k));
+                                break;
+                            }
+                        }
+                    }
+                    if (capabilitiesLength != parameterValueLength)
+                        throw cRuntimeError("Cannot serialize BGP OPEN Message: incorrect capabilities parameter length field.");
+                }
+                else {
+                    const BgpOptionalParameterRaw *rawParameter = check_and_cast<const BgpOptionalParameterRaw *>(optionalParameter);
+                    for (size_t e = 0; e < rawParameter->getValueArraySize(); ++e)
+                        stream.writeByte(rawParameter->getValue(e));
                 }
                 numOptionalParametersBytes += 2 + parameterValueLength;
             }
@@ -76,7 +203,8 @@ void BgpHeaderSerializer::serialize(MemoryOutputStream& stream, const Ptr<const 
                 auto& withdrawnRoutes = bgpUpdateMessage->getWithdrawnRoutes(i);
                 uint16_t length = withdrawnRoutes.length;
                 stream.writeByte(length);
-                stream.writeNBitsOfUint64Be(withdrawnRoutes.prefix.getInt() >> (32 - length), length);
+                if (length > 0)
+                    stream.writeNBitsOfUint64Be(withdrawnRoutes.prefix.getInt() >> (32 - length), length);
                 if (length % 8 != 0)
                     stream.writeBitRepeatedly(0, 8 - (length % 8));
             }
@@ -149,6 +277,39 @@ void BgpHeaderSerializer::serialize(MemoryOutputStream& stream, const Ptr<const 
                         stream.writeIpv4Address(aggregator->getBgpSpeaker());
                         break;
                     }
+                    case MP_REACH_NLRI: {
+                        const BgpUpdatePathAttributesMpReachNlri *mpReachNlri = check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(pathAttributes);
+                        stream.writeUint16Be(mpReachNlri->getAfi());
+                        stream.writeByte(mpReachNlri->getSafi());
+                        uint8_t nextHopNetworkAddressLength = mpReachNlri->getNextHopNetworkAddressLength();
+                        stream.writeByte(nextHopNetworkAddressLength);
+                        if (mpReachNlri->getAfi() == AFI_IPV4) {
+                            if (nextHopNetworkAddressLength != 4)
+                                throw cRuntimeError("Cannot serialize BGP UPDATE Message: IPv4 MP_REACH_NLRI next hop length must be 4.");
+                            stream.writeIpv4Address(mpReachNlri->getNextHopIpv4Address());
+                        }
+                        else if (mpReachNlri->getAfi() == AFI_IPV6) {
+                            if (nextHopNetworkAddressLength != 16 && nextHopNetworkAddressLength != 32)
+                                throw cRuntimeError("Cannot serialize BGP UPDATE Message: IPv6 MP_REACH_NLRI next hop length must be 16 or 32.");
+                            stream.writeIpv6Address(mpReachNlri->getNextHopIpv6Address());
+                            if (nextHopNetworkAddressLength == 32)
+                                stream.writeIpv6Address(Ipv6Address::UNSPECIFIED_ADDRESS);
+                        }
+                        else
+                            throw cRuntimeError("Cannot serialize BGP UPDATE Message: unsupported MP_REACH_NLRI AFI %d.", mpReachNlri->getAfi());
+                        stream.writeByte(mpReachNlri->getNumberOfSnpas());
+                        for (size_t e = 0; e < mpReachNlri->getNlriArraySize(); ++e)
+                            writeMpNlri(stream, mpReachNlri->getNlri(e), mpReachNlri->getAfi());
+                        break;
+                    }
+                    case MP_UNREACH_NLRI: {
+                        const BgpUpdatePathAttributesMpUnreachNlri *mpUnreachNlri = check_and_cast<const BgpUpdatePathAttributesMpUnreachNlri *>(pathAttributes);
+                        stream.writeUint16Be(mpUnreachNlri->getAfi());
+                        stream.writeByte(mpUnreachNlri->getSafi());
+                        for (size_t e = 0; e < mpUnreachNlri->getWithdrawnRoutesArraySize(); ++e)
+                            writeMpNlri(stream, mpUnreachNlri->getWithdrawnRoutes(e), mpUnreachNlri->getAfi());
+                        break;
+                    }
                     default:
                         throw cRuntimeError("Cannot serialize BGP UPDATE Message: incorrect typeCode: %d.", typeCode);
                 }
@@ -157,7 +318,8 @@ void BgpHeaderSerializer::serialize(MemoryOutputStream& stream, const Ptr<const 
                 auto& nlri = bgpUpdateMessage->getNLRI(i);
                 uint8_t length = nlri.length;
                 stream.writeByte(length);
-                stream.writeNBitsOfUint64Be(nlri.prefix.getInt() >> (32 - length), length);
+                if (length > 0)
+                    stream.writeNBitsOfUint64Be(nlri.prefix.getInt() >> (32 - length), length);
                 if (length % 8 != 0)
                     stream.writeBitRepeatedly(0, 8 - (length % 8));
             }
@@ -211,16 +373,50 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
             bgpOpenMessage->setOptionalParametersLength(optionalParametersLength);
             for (size_t i = 0; optionalParametersLength > 0; ++i) {
                 bgpOpenMessage->setOptionalParameterArraySize(i + 1);
-                BgpOptionalParameterRaw *optionalParameter = new BgpOptionalParameterRaw();
-                optionalParameter->setParameterType(stream.readByte());
+                uint8_t parameterType = stream.readByte();
                 uint8_t parameterValueLength = stream.readByte();
-                optionalParameter->setParameterValueLength(parameterValueLength);
+                BgpOptionalParameterBase *optionalParameter = nullptr;
                 optionalParametersLength -= (2 + parameterValueLength);
-                for (size_t e = 0; parameterValueLength > 0; ++e) {
-                    optionalParameter->setValueArraySize(e + 1);
-                    optionalParameter->setValue(e, stream.readByte());
-                    --parameterValueLength;
+                if (parameterType == BGP_OPTIONAL_PARAMETER_CAPABILITIES) {
+                    BgpOptionalParameterCapabilities *capabilitiesParameter = new BgpOptionalParameterCapabilities();
+                    uint8_t remainingCapabilitiesLength = parameterValueLength;
+                    for (size_t e = 0; remainingCapabilitiesLength > 0; ++e) {
+                        capabilitiesParameter->setCapabilityArraySize(e + 1);
+                        uint8_t capabilityCode = stream.readByte();
+                        uint8_t capabilityLength = stream.readByte();
+                        remainingCapabilitiesLength -= (2 + capabilityLength);
+                        if (capabilityCode == BGP_CAPABILITY_MULTIPROTOCOL && capabilityLength == 4) {
+                            BgpCapabilityMultiprotocol *multiprotocol = new BgpCapabilityMultiprotocol();
+                            multiprotocol->setCapabilityCode(static_cast<BgpCapabilityCode>(capabilityCode));
+                            multiprotocol->setCapabilityLength(capabilityLength);
+                            multiprotocol->setAfi(static_cast<BgpAddressFamilyIdentifier>(stream.readUint16Be()));
+                            multiprotocol->setReserved(stream.readByte());
+                            multiprotocol->setSafi(static_cast<BgpSubsequentAddressFamilyIdentifier>(stream.readByte()));
+                            capabilitiesParameter->setCapability(e, multiprotocol);
+                        }
+                        else {
+                            BgpCapabilityRaw *rawCapability = new BgpCapabilityRaw();
+                            rawCapability->setCapabilityCode(capabilityCode);
+                            rawCapability->setCapabilityLength(capabilityLength);
+                            for (size_t k = 0; k < capabilityLength; ++k) {
+                                rawCapability->setValueArraySize(k + 1);
+                                rawCapability->setValue(k, stream.readByte());
+                            }
+                            capabilitiesParameter->setCapability(e, rawCapability);
+                        }
+                    }
+                    optionalParameter = capabilitiesParameter;
                 }
+                else {
+                    BgpOptionalParameterRaw *rawParameter = new BgpOptionalParameterRaw();
+                    for (size_t e = 0; e < parameterValueLength; ++e) {
+                        rawParameter->setValueArraySize(e + 1);
+                        rawParameter->setValue(e, stream.readByte());
+                    }
+                    optionalParameter = rawParameter;
+                }
+                optionalParameter->setParameterType(parameterType);
+                optionalParameter->setParameterValueLength(parameterValueLength);
                 bgpOpenMessage->setOptionalParameter(i, optionalParameter);
             }
             return bgpOpenMessage;
@@ -244,8 +440,8 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
                 BgpUpdateWithdrawnRoutes *withdrawnRoutes = new BgpUpdateWithdrawnRoutes();
                 uint8_t length = stream.readByte();
                 withdrawnRoutes->length = length;
-                uint32_t prefix = stream.readNBitsToUint64Be(length);
-                withdrawnRoutes->prefix = Ipv4Address(prefix << (32 - length));
+                uint32_t prefix = length == 0 ? 0 : stream.readNBitsToUint64Be(length);
+                withdrawnRoutes->prefix = Ipv4Address(length == 0 ? 0 : prefix << (32 - length));
                 if (length % 8 != 0) {
                     stream.readBitRepeatedly(0, 8 - (length % 8));
                     withdrawnRoutesLength -= (1 + (length / 8) + 1);
@@ -408,6 +604,74 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
                         bgpUpdateMessage->setPathAttributes(i, aggregator);
                         break;
                     }
+                    case MP_REACH_NLRI: {
+                        if (!optionalBit || transitiveBit || pathAttributeLength < 5) {
+                            bgpUpdateMessage->markIncorrect();
+                            return bgpUpdateMessage;
+                        }
+                        BgpUpdatePathAttributesMpReachNlri *mpReachNlri = new BgpUpdatePathAttributesMpReachNlri();
+                        mpReachNlri->setOptionalBit(optionalBit);
+                        mpReachNlri->setTransitiveBit(transitiveBit);
+                        mpReachNlri->setPartialBit(partialBit);
+                        mpReachNlri->setExtendedLengthBit(extendedLengthBit);
+                        mpReachNlri->setReserved(0);
+                        mpReachNlri->setLength(pathAttributeLength);
+                        mpReachNlri->setTypeCode(typeCode);
+                        BgpAddressFamilyIdentifier afi = static_cast<BgpAddressFamilyIdentifier>(stream.readUint16Be());
+                        mpReachNlri->setAfi(afi);
+                        mpReachNlri->setSafi(static_cast<BgpSubsequentAddressFamilyIdentifier>(stream.readByte()));
+                        uint8_t nextHopNetworkAddressLength = stream.readByte();
+                        mpReachNlri->setNextHopNetworkAddressLength(nextHopNetworkAddressLength);
+                        uint16_t remainingAttributeLength = pathAttributeLength - 4;
+                        if (afi == AFI_IPV4 && nextHopNetworkAddressLength == 4)
+                            mpReachNlri->setNextHopIpv4Address(stream.readIpv4Address());
+                        else if (afi == AFI_IPV6 && (nextHopNetworkAddressLength == 16 || nextHopNetworkAddressLength == 32)) {
+                            mpReachNlri->setNextHopIpv6Address(stream.readIpv6Address());
+                            if (nextHopNetworkAddressLength == 32)
+                                stream.readIpv6Address();
+                        }
+                        else {
+                            bgpUpdateMessage->markIncorrect();
+                            return bgpUpdateMessage;
+                        }
+                        remainingAttributeLength -= nextHopNetworkAddressLength;
+                        mpReachNlri->setNumberOfSnpas(stream.readByte());
+                        remainingAttributeLength -= 1;
+                        for (size_t e = 0; remainingAttributeLength > 0; ++e) {
+                            BgpMpNlri nlri = readMpNlri(stream, afi);
+                            mpReachNlri->setNlriArraySize(e + 1);
+                            mpReachNlri->setNlri(e, nlri);
+                            remainingAttributeLength -= getMpNlriBytes(nlri);
+                        }
+                        bgpUpdateMessage->setPathAttributes(i, mpReachNlri);
+                        break;
+                    }
+                    case MP_UNREACH_NLRI: {
+                        if (!optionalBit || transitiveBit || pathAttributeLength < 3) {
+                            bgpUpdateMessage->markIncorrect();
+                            return bgpUpdateMessage;
+                        }
+                        BgpUpdatePathAttributesMpUnreachNlri *mpUnreachNlri = new BgpUpdatePathAttributesMpUnreachNlri();
+                        mpUnreachNlri->setOptionalBit(optionalBit);
+                        mpUnreachNlri->setTransitiveBit(transitiveBit);
+                        mpUnreachNlri->setPartialBit(partialBit);
+                        mpUnreachNlri->setExtendedLengthBit(extendedLengthBit);
+                        mpUnreachNlri->setReserved(0);
+                        mpUnreachNlri->setLength(pathAttributeLength);
+                        mpUnreachNlri->setTypeCode(typeCode);
+                        BgpAddressFamilyIdentifier afi = static_cast<BgpAddressFamilyIdentifier>(stream.readUint16Be());
+                        mpUnreachNlri->setAfi(afi);
+                        mpUnreachNlri->setSafi(static_cast<BgpSubsequentAddressFamilyIdentifier>(stream.readByte()));
+                        uint16_t remainingAttributeLength = pathAttributeLength - 3;
+                        for (size_t e = 0; remainingAttributeLength > 0; ++e) {
+                            BgpMpNlri nlri = readMpNlri(stream, afi);
+                            mpUnreachNlri->setWithdrawnRoutesArraySize(e + 1);
+                            mpUnreachNlri->setWithdrawnRoutes(e, nlri);
+                            remainingAttributeLength -= getMpNlriBytes(nlri);
+                        }
+                        bgpUpdateMessage->setPathAttributes(i, mpUnreachNlri);
+                        break;
+                    }
                     default: {
                         BgpUpdatePathAttributes *pathAttributes = new BgpUpdatePathAttributes();
                         pathAttributes->setOptionalBit(optionalBit);
@@ -417,6 +681,8 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
                         pathAttributes->setReserved(0);
                         pathAttributes->setLength(pathAttributeLength);
                         pathAttributes->setTypeCode(typeCode);
+                        for (size_t e = 0; e < pathAttributeLength; ++e)
+                            stream.readByte();
                         bgpUpdateMessage->markIncorrect();
                         bgpUpdateMessage->setPathAttributes(i, pathAttributes);
                     }
@@ -428,8 +694,8 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
                 bgpUpdateMessage->setNLRIArraySize(i + 1);
                 uint8_t length = stream.readByte();
                 nlri->length = length;
-                uint32_t prefix = stream.readNBitsToUint64Be(length);
-                nlri->prefix = Ipv4Address(prefix << (32 - length));
+                uint32_t prefix = length == 0 ? 0 : stream.readNBitsToUint64Be(length);
+                nlri->prefix = Ipv4Address(length == 0 ? 0 : prefix << (32 - length));
                 if (length % 8 != 0) {
                     stream.readBitRepeatedly(0, 8 - (length % 8));
                     nlri_size -= (1 + (length / 8) + 1);
@@ -465,4 +731,3 @@ const Ptr<Chunk> BgpHeaderSerializer::deserialize(MemoryInputStream& stream) con
 
 } // namespace bgp
 } // namespace inet
-

@@ -51,6 +51,24 @@ unsigned short computePathAttributeBytes(const BgpUpdatePathAttributes& pathAttr
             ASSERT(attr.getLength() == 0);
             return contentBytes;
         }
+        case BgpUpdateAttributeTypeCode::MP_REACH_NLRI: {
+            auto& attr = *check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(&pathAttr);
+            unsigned short valueBytes = 2 + 1 + 1 + attr.getNextHopNetworkAddressLength() + 1;
+            for (size_t i = 0; i < attr.getNlriArraySize(); i++)
+                valueBytes += 1 + (attr.getNlri(i).length + 7) / 8;
+            ASSERT(attr.getLength() == valueBytes);
+            contentBytes += valueBytes;
+            return contentBytes;
+        }
+        case BgpUpdateAttributeTypeCode::MP_UNREACH_NLRI: {
+            auto& attr = *check_and_cast<const BgpUpdatePathAttributesMpUnreachNlri *>(&pathAttr);
+            unsigned short valueBytes = 2 + 1;
+            for (size_t i = 0; i < attr.getWithdrawnRoutesArraySize(); i++)
+                valueBytes += 1 + (attr.getWithdrawnRoutes(i).length + 7) / 8;
+            ASSERT(attr.getLength() == valueBytes);
+            contentBytes += valueBytes;
+            return contentBytes;
+        }
         default:
             throw cRuntimeError("Unknown BgpUpdateAttributeTypeCode: %d", (int)pathAttr.getTypeCode());
     }
@@ -58,4 +76,3 @@ unsigned short computePathAttributeBytes(const BgpUpdatePathAttributes& pathAttr
 
 } // namespace bgp
 } // namespace inet
-

@@ -1,0 +1,194 @@
+%description:
+Round-trip serialization tests for BGP RFC 4271 messages and RFC 4760 MP-BGP extensions.
+
+%includes:
+#include "inet/common/packet/Packet.h"
+#include "inet/routing/bgpv4/bgpmessage/BgpHeader_m.h"
+#include "inet/routing/bgpv4/bgpmessage/BgpUpdate.h"
+
+using namespace inet;
+using namespace inet::bgp;
+
+%global:
+
+template<typename T>
+Ptr<const T> roundTrip(const Ptr<const T>& original)
+{
+    Packet packet("bgp-test");
+    packet.insertAtFront(original);
+    auto bytes = packet.peekAllAsBytes();
+
+    Packet packet2("bgp-test2");
+    packet2.insertAtFront(bytes);
+    return packet2.popAtFront<T>(packet2.getDataLength());
+}
+
+%activity:
+
+// RFC 4271 OPEN without optional parameters
+{
+    auto open = makeShared<BgpOpenMessage>();
+    open->setMyAS(65000);
+    open->setHoldTime(SimTime(180, SIMTIME_S));
+    open->setBGPIdentifier(Ipv4Address("192.0.2.1"));
+
+    auto result = roundTrip(staticPtrCast<const BgpOpenMessage>(open));
+    ASSERT(result->getMyAS() == 65000);
+    ASSERT(result->getHoldTime() == SimTime(180, SIMTIME_S));
+    ASSERT(result->getBGPIdentifier() == Ipv4Address("192.0.2.1"));
+    ASSERT(result->getOptionalParameterArraySize() == 0);
+    EV << "RFC4271 OPEN PASS" << endl;
+}
+
+// RFC 4760 Multiprotocol capability in OPEN
+{
+    auto open = makeShared<BgpOpenMessage>();
+    open->setMyAS(65000);
+    open->setHoldTime(SimTime(180, SIMTIME_S));
+    open->setBGPIdentifier(Ipv4Address("192.0.2.1"));
+    open->setOptionalParametersLength(8);
+    open->setTotalLength(37);
+    open->setChunkLength(B(37));
+
+    auto *parameter = new BgpOptionalParameterCapabilities();
+    parameter->setParameterValueLength(6);
+    parameter->setCapabilityArraySize(1);
+
+    auto *capability = new BgpCapabilityMultiprotocol();
+    capability->setAfi(AFI_IPV6);
+    capability->setSafi(SAFI_UNICAST);
+    parameter->setCapability(0, capability);
+    open->setOptionalParameterArraySize(1);
+    open->setOptionalParameter(0, parameter);
+
+    auto result = roundTrip(staticPtrCast<const BgpOpenMessage>(open));
+    ASSERT(result->getOptionalParametersLength() == 8);
+    ASSERT(result->getOptionalParameterArraySize() == 1);
+    auto *capabilitiesParameter = check_and_cast<const BgpOptionalParameterCapabilities *>(result->getOptionalParameter(0));
+    ASSERT(capabilitiesParameter->getParameterValueLength() == 6);
+    ASSERT(capabilitiesParameter->getCapabilityArraySize() == 1);
+    auto *mpCapability = check_and_cast<const BgpCapabilityMultiprotocol *>(capabilitiesParameter->getCapability(0));
+    ASSERT(mpCapability->getAfi() == AFI_IPV6);
+    ASSERT(mpCapability->getSafi() == SAFI_UNICAST);
+    EV << "RFC4760 OPEN capability PASS" << endl;
+}
+
+// RFC 4271 UPDATE with classic IPv4 unicast NLRI
+{
+    auto update = makeShared<BgpUpdateMessage>();
+    std::vector<BgpUpdatePathAttributes *> attributes;
+
+    auto *origin = new BgpUpdatePathAttributesOrigin();
+    origin->setValue(IGP);
+    attributes.push_back(origin);
+
+    auto *asPath = new BgpUpdatePathAttributesAsPath();
+    asPath->setValueArraySize(1);
+    asPath->getValueForUpdate(0).setType(AS_SEQUENCE);
+    asPath->getValueForUpdate(0).setLength(1);
+    asPath->getValueForUpdate(0).setAsValueArraySize(1);
+    asPath->getValueForUpdate(0).setAsValue(0, 65000);
+    asPath->setLength(4);
+    attributes.push_back(asPath);
+
+    auto *nextHop = new BgpUpdatePathAttributesNextHop();
+    nextHop->setValue(Ipv4Address("192.0.2.254"));
+    attributes.push_back(nextHop);
+
+    unsigned short pathAttributeLength = 0;
+    update->setPathAttributesArraySize(attributes.size());
+    for (size_t i = 0; i < attributes.size(); i++) {
+        pathAttributeLength += computePathAttributeBytes(*attributes[i]);
+        update->setPathAttributes(i, attributes[i]);
+    }
+    update->setTotalPathAttributeLength(pathAttributeLength);
+    update->addChunkLength(B(pathAttributeLength));
+
+    BgpUpdateNlri nlri;
+    nlri.length = 24;
+    nlri.prefix = Ipv4Address("203.0.113.0");
+    update->setNLRIArraySize(1);
+    update->setNLRI(0, nlri);
+    update->addChunkLength(B(4));
+    update->setTotalLength(update->getChunkLength().get<B>());
+
+    auto result = roundTrip(staticPtrCast<const BgpUpdateMessage>(update));
+    ASSERT(result->getPathAttributesArraySize() == 3);
+    ASSERT(result->getNLRIArraySize() == 1);
+    ASSERT(result->getNLRI(0).length == 24);
+    ASSERT(result->getNLRI(0).prefix == Ipv4Address("203.0.113.0"));
+    EV << "RFC4271 UPDATE PASS" << endl;
+}
+
+// RFC 4760 MP_REACH_NLRI with IPv6 unicast NLRI
+{
+    auto update = makeShared<BgpUpdateMessage>();
+    auto *mpReach = new BgpUpdatePathAttributesMpReachNlri();
+    mpReach->setAfi(AFI_IPV6);
+    mpReach->setSafi(SAFI_UNICAST);
+    mpReach->setNextHopNetworkAddressLength(16);
+    mpReach->setNextHopIpv6Address(Ipv6Address("2001:db8::1"));
+
+    BgpMpNlri nlri;
+    nlri.length = 64;
+    nlri.ipv6Prefix = Ipv6Address("2001:db8:1::");
+    mpReach->setNlriArraySize(1);
+    mpReach->setNlri(0, nlri);
+    mpReach->setLength(30);
+
+    update->setPathAttributesArraySize(1);
+    update->setPathAttributes(0, mpReach);
+    update->setTotalPathAttributeLength(computePathAttributeBytes(*mpReach));
+    update->addChunkLength(B(update->getTotalPathAttributeLength()));
+    update->setTotalLength(update->getChunkLength().get<B>());
+
+    auto result = roundTrip(staticPtrCast<const BgpUpdateMessage>(update));
+    ASSERT(result->getPathAttributesArraySize() == 1);
+    auto *resultMpReach = check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(result->getPathAttributes(0));
+    ASSERT(resultMpReach->getAfi() == AFI_IPV6);
+    ASSERT(resultMpReach->getSafi() == SAFI_UNICAST);
+    ASSERT(resultMpReach->getNextHopNetworkAddressLength() == 16);
+    ASSERT(resultMpReach->getNextHopIpv6Address() == Ipv6Address("2001:db8::1"));
+    ASSERT(resultMpReach->getNlriArraySize() == 1);
+    ASSERT(resultMpReach->getNlri(0).length == 64);
+    ASSERT(resultMpReach->getNlri(0).ipv6Prefix == Ipv6Address("2001:db8:1::"));
+    EV << "RFC4760 MP_REACH_NLRI PASS" << endl;
+}
+
+// RFC 4760 MP_UNREACH_NLRI with IPv6 unicast withdrawn route
+{
+    auto update = makeShared<BgpUpdateMessage>();
+    auto *mpUnreach = new BgpUpdatePathAttributesMpUnreachNlri();
+    mpUnreach->setAfi(AFI_IPV6);
+    mpUnreach->setSafi(SAFI_UNICAST);
+
+    BgpMpNlri withdrawn;
+    withdrawn.length = 64;
+    withdrawn.ipv6Prefix = Ipv6Address("2001:db8:2::");
+    mpUnreach->setWithdrawnRoutesArraySize(1);
+    mpUnreach->setWithdrawnRoutes(0, withdrawn);
+    mpUnreach->setLength(12);
+
+    update->setPathAttributesArraySize(1);
+    update->setPathAttributes(0, mpUnreach);
+    update->setTotalPathAttributeLength(computePathAttributeBytes(*mpUnreach));
+    update->addChunkLength(B(update->getTotalPathAttributeLength()));
+    update->setTotalLength(update->getChunkLength().get<B>());
+
+    auto result = roundTrip(staticPtrCast<const BgpUpdateMessage>(update));
+    ASSERT(result->getPathAttributesArraySize() == 1);
+    auto *resultMpUnreach = check_and_cast<const BgpUpdatePathAttributesMpUnreachNlri *>(result->getPathAttributes(0));
+    ASSERT(resultMpUnreach->getAfi() == AFI_IPV6);
+    ASSERT(resultMpUnreach->getSafi() == SAFI_UNICAST);
+    ASSERT(resultMpUnreach->getWithdrawnRoutesArraySize() == 1);
+    ASSERT(resultMpUnreach->getWithdrawnRoutes(0).length == 64);
+    ASSERT(resultMpUnreach->getWithdrawnRoutes(0).ipv6Prefix == Ipv6Address("2001:db8:2::"));
+    EV << "RFC4760 MP_UNREACH_NLRI PASS" << endl;
+}
+
+%contains: stdout
+RFC4271 OPEN PASS
+RFC4760 OPEN capability PASS
+RFC4271 UPDATE PASS
+RFC4760 MP_REACH_NLRI PASS
+RFC4760 MP_UNREACH_NLRI PASS

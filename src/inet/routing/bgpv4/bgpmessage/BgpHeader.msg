@@ -9,6 +9,7 @@ import inet.common.INETDefs;
 import inet.common.Units;
 import inet.common.packet.chunk.Chunk;
 import inet.networklayer.contract.ipv4.Ipv4Address;
+import inet.networklayer.contract.ipv6.Ipv6Address;
 import inet.routing.bgpv4.BgpCommon;
 
 namespace inet::bgp;
@@ -68,18 +69,66 @@ class BgpKeepAliveMessage extends BgpHeader
     type = BGP_KEEPALIVE;
 }
 
-class BgpOptionalParameterBase
+class BgpOptionalParameterBase extends cObject
 {
     @packetData;
     short parameterType;
     unsigned short parameterValueLength;
 }
 
-//TODO add accepted BgpOptionalParameter variants
+enum BgpOptionalParameterType
+{
+    BGP_OPTIONAL_PARAMETER_AUTHENTICATION = 1;
+    BGP_OPTIONAL_PARAMETER_CAPABILITIES = 2;
+}
+
+enum BgpCapabilityCode
+{
+    BGP_CAPABILITY_MULTIPROTOCOL = 1;
+}
+
+enum BgpAddressFamilyIdentifier
+{
+    AFI_IPV4 = 1;
+    AFI_IPV6 = 2;
+}
+
+enum BgpSubsequentAddressFamilyIdentifier
+{
+    SAFI_UNICAST = 1;
+    SAFI_MULTICAST = 2;
+}
+
+class BgpCapabilityBase extends cObject
+{
+    @packetData;
+    uint8_t capabilityCode;
+    uint8_t capabilityLength;
+}
+
+class BgpCapabilityRaw extends BgpCapabilityBase
+{
+    char value[];
+}
+
+class BgpCapabilityMultiprotocol extends BgpCapabilityBase
+{
+    capabilityCode = BGP_CAPABILITY_MULTIPROTOCOL;
+    capabilityLength = 4;
+    BgpAddressFamilyIdentifier afi;
+    uint8_t reserved = 0;
+    BgpSubsequentAddressFamilyIdentifier safi;
+}
 
 class BgpOptionalParameterRaw extends BgpOptionalParameterBase
 {
     char value[];
+}
+
+class BgpOptionalParameterCapabilities extends BgpOptionalParameterBase
+{
+    parameterType = BGP_OPTIONAL_PARAMETER_CAPABILITIES;
+    BgpCapabilityBase *capability[] @owned;
 }
 
 //
@@ -108,6 +157,8 @@ enum BgpUpdateAttributeTypeCode
     LOCAL_PREF = 5;
     ATOMIC_AGGREGATE = 6;
     AGGREGATOR = 7;
+    MP_REACH_NLRI = 14;
+    MP_UNREACH_NLRI = 15;
 }
 
 class BgpUpdatePathAttributes extends cObject
@@ -189,6 +240,40 @@ class BgpUpdatePathAttributesAggregator extends BgpUpdatePathAttributes
     length = 6;
     uint16_t asNumber;
     Ipv4Address bgpSpeaker;
+}
+
+struct BgpMpNlri
+{
+    @packetData;
+    uint8_t length = 0; // length of prefix in bits, 1 octet
+    Ipv4Address ipv4Prefix;
+    Ipv6Address ipv6Prefix;
+}
+
+// MP_REACH_NLRI (RFC 4760 Section 3, Type code 14):
+class BgpUpdatePathAttributesMpReachNlri extends BgpUpdatePathAttributes
+{
+    typeCode = MP_REACH_NLRI;
+    optionalBit = true;
+    transitiveBit = false;
+    BgpAddressFamilyIdentifier afi;
+    BgpSubsequentAddressFamilyIdentifier safi;
+    uint8_t nextHopNetworkAddressLength;
+    Ipv4Address nextHopIpv4Address;
+    Ipv6Address nextHopIpv6Address;
+    uint8_t numberOfSnpas = 0;
+    BgpMpNlri nlri[];
+}
+
+// MP_UNREACH_NLRI (RFC 4760 Section 4, Type code 15):
+class BgpUpdatePathAttributesMpUnreachNlri extends BgpUpdatePathAttributes
+{
+    typeCode = MP_UNREACH_NLRI;
+    optionalBit = true;
+    transitiveBit = false;
+    BgpAddressFamilyIdentifier afi;
+    BgpSubsequentAddressFamilyIdentifier safi;
+    BgpMpNlri withdrawnRoutes[];
 }
 
 struct BgpUpdateWithdrawnRoutes
