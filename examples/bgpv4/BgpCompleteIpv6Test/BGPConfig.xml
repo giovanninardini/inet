@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<BGPConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="BGP.xsd">
+
+    <TimerParams>
+        <connectRetryTime> 120 </connectRetryTime>
+        <holdTime> 180 </holdTime>
+        <keepAliveTime> 60 </keepAliveTime>
+        <startDelay> 4 </startDelay>
+    </TimerParams>
+
+    <AS id="60111">
+        <Router interAddr="172.1.10.255" addressFamilies="ipv6-unicast"> <!--Router A1-->
+            <Network address="2001:db8:1::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:10::1"/>
+            <Neighbor address="10.10.10.2" addressFamilies="ipv6-unicast"/>
+        </Router>
+        <Router interAddr="172.1.20.255" addressFamilies="ipv6-unicast"> <!--Router A2-->
+            <Network address="2001:db8:1::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:20::1"/>
+            <Neighbor address="10.10.20.2" addressFamilies="ipv6-unicast"/>
+        </Router>
+    </AS>
+
+    <AS id="60222">
+        <Router interAddr="172.10.4.254" addressFamilies="ipv6-unicast"> <!--Router B-->
+            <Network address="2001:db8:2::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:20::2"/>
+            <Neighbor address="10.10.20.1" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+            <Neighbor address="10.10.30.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+    </AS>
+
+    <AS id="60333">
+        <Router interAddr="172.13.1.255" addressFamilies="ipv6-unicast"> <!--Router C1-->
+            <Neighbor address="10.10.10.1" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+        <Router interAddr="172.13.2.255" addressFamilies="ipv6-unicast"> <!--Router C2-->
+            <Neighbor address="10.10.30.1" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+        <Router interAddr="172.13.3.255" addressFamilies="ipv6-unicast"> <!--Router C3-->
+            <Neighbor address="10.10.40.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+        <Router interAddr="172.13.4.255" addressFamilies="ipv6-unicast"> <!--Router C4-->
+            <Neighbor address="10.10.50.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+        <DenyRouteOUT Address="172.10.8.0" Netmask="255.255.255.0"/>
+    </AS>
+
+    <AS id="60444">
+        <Router interAddr="172.10.8.254" addressFamilies="ipv6-unicast"> <!--Router D-->
+            <Network address="2001:db8:4::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:40::2"/>
+            <Neighbor address="10.10.40.1" addressFamilies="ipv6-unicast"/>
+        </Router>
+    </AS>
+
+    <AS id="60555">
+        <Router interAddr="172.15.0.254" addressFamilies="ipv6-unicast"> <!--Router E-->
+            <Network address="2001:db8:5::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:50::2"/>
+            <Neighbor address="10.10.50.1" addressFamilies="ipv6-unicast"/>
+        </Router>
+        <DenyASIN> 60222 </DenyASIN>
+    </AS>
+
+    <Session id="1">
+        <Router exterAddr="10.10.10.1"/> <!--Router A1-->
+        <Router exterAddr="10.10.10.2"/> <!--Router C1-->
+    </Session>
+
+    <Session id="2">
+        <Router exterAddr="10.10.20.1"/> <!--Router A2-->
+        <Router exterAddr="10.10.20.2"/> <!--Router B-->
+    </Session>
+
+    <Session id="3">
+        <Router exterAddr="10.10.30.1"/> <!--Router B-->
+        <Router exterAddr="10.10.30.2"/> <!--Router C2-->
+    </Session>
+
+    <Session id="4">
+        <Router exterAddr="10.10.40.1"/> <!--Router C3-->
+        <Router exterAddr="10.10.40.2"/> <!--Router D-->
+    </Session>
+
+    <Session id="5">
+        <Router exterAddr="10.10.50.1"/> <!--Router C4-->
+        <Router exterAddr="10.10.50.2"/> <!--Router E-->
+    </Session>
+
+</BGPConfig>

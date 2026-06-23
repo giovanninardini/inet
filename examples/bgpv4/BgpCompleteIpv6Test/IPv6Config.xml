@@ -1,0 +1,74 @@
+<config>
+  <interface hosts='A1' names='ppp0' address='2001:db8:10::1'/>
+  <interface hosts='A1' names='ppp1' address='2001:db8:1:10::ff'/>
+  <interface hosts='A2' names='ppp0' address='2001:db8:20::1'/>
+  <interface hosts='A2' names='ppp1' address='2001:db8:1:20::ff'/>
+  <interface hosts='B1' names='ppp0' address='2001:db8:20::2'/>
+  <interface hosts='B1' names='ppp1' address='2001:db8:30::1'/>
+  <interface hosts='B1' names='eth0' address='2001:db8:2::1'/>
+  <interface hosts='C1' names='ppp0' address='2001:db8:10::2'/>
+  <interface hosts='C1' names='ppp1' address='2001:db8:13:1::ff'/>
+  <interface hosts='C2' names='ppp0' address='2001:db8:30::2'/>
+  <interface hosts='C2' names='ppp1' address='2001:db8:13:2::ff'/>
+  <interface hosts='C3' names='ppp0' address='2001:db8:40::1'/>
+  <interface hosts='C3' names='ppp1' address='2001:db8:13:3::ff'/>
+  <interface hosts='C4' names='ppp0' address='2001:db8:50::1'/>
+  <interface hosts='C4' names='ppp1' address='2001:db8:13:4::ff'/>
+  <interface hosts='D1' names='ppp0' address='2001:db8:40::2'/>
+  <interface hosts='D1' names='eth0' address='2001:db8:4::1'/>
+  <interface hosts='E1' names='ppp0' address='2001:db8:50::2'/>
+  <interface hosts='E1' names='eth0' address='2001:db8:5::1'/>
+  <interface hosts='RA3' names='ppp0' address='2001:db8:1:10::fe'/>
+  <interface hosts='RA3' names='ppp1' address='2001:db8:1:20::fe'/>
+  <interface hosts='RA3' names='eth0' address='2001:db8:1::1'/>
+  <interface hosts='RC5' names='ppp0' address='2001:db8:13:1::fe'/>
+  <interface hosts='RC5' names='ppp1' address='2001:db8:13:2::fe'/>
+  <interface hosts='RC5' names='ppp2' address='2001:db8:13:3::fe'/>
+  <interface hosts='RC5' names='ppp3' address='2001:db8:13:4::fe'/>
+  <interface hosts='HA11' names='eth0' address='2001:db8:1::11'/>
+  <interface hosts='HA12' names='eth0' address='2001:db8:1::12'/>
+  <interface hosts='HB11' names='eth0' address='2001:db8:2::11'/>
+  <interface hosts='HB12' names='eth0' address='2001:db8:2::12'/>
+  <interface hosts='HD11' names='eth0' address='2001:db8:4::11'/>
+  <interface hosts='HD12' names='eth0' address='2001:db8:4::12'/>
+  <interface hosts='HE11' names='eth0' address='2001:db8:5::11'/>
+  <interface hosts='HE12' names='eth0' address='2001:db8:5::12'/>
+
+  <route hosts='HA11 HA12' destination='::/0' gateway='2001:db8:1::1' interface='eth0'/>
+  <route hosts='HB11 HB12' destination='::/0' gateway='2001:db8:2::1' interface='eth0'/>
+  <route hosts='HD11 HD12' destination='::/0' gateway='2001:db8:4::1' interface='eth0'/>
+  <route hosts='HE11 HE12' destination='::/0' gateway='2001:db8:5::1' interface='eth0'/>
+
+  <route hosts='RA3 HA11 HA12' destination='2001:db8:1::/64' interface='eth0'/>
+  <route hosts='B1 HB11 HB12' destination='2001:db8:2::/64' interface='eth0'/>
+  <route hosts='D1 HD11 HD12' destination='2001:db8:4::/64' interface='eth0'/>
+  <route hosts='E1 HE11 HE12' destination='2001:db8:5::/64' interface='eth0'/>
+
+  <route hosts='A1' destination='2001:db8:1::/64' gateway='2001:db8:1:10::fe' interface='ppp1'/>
+  <route hosts='A2' destination='2001:db8:1::/64' gateway='2001:db8:1:20::fe' interface='ppp1'/>
+  <route hosts='RA3' destination='2001:db8:10::/64' gateway='2001:db8:1:10::ff' interface='ppp0'/>
+  <route hosts='RA3' destination='2001:db8:20::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
+  <route hosts='RA3' destination='2001:db8:2::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
+  <route hosts='RA3' destination='2001:db8:4::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
+  <route hosts='RA3' destination='2001:db8:5::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
+
+  <route hosts='C1' destination='2001:db8:4::/64' gateway='2001:db8:13:1::fe' interface='ppp1'/>
+  <route hosts='C2' destination='2001:db8:4::/64' gateway='2001:db8:13:2::fe' interface='ppp1'/>
+  <route hosts='C3' destination='2001:db8:5::/64' gateway='2001:db8:13:3::fe' interface='ppp1'/>
+  <route hosts='C1' destination='2001:db8:2::/64' gateway='2001:db8:13:1::fe' interface='ppp1'/>
+  <route hosts='C1' destination='2001:db8:5::/64' gateway='2001:db8:13:1::fe' interface='ppp1'/>
+  <route hosts='C2' destination='2001:db8:5::/64' gateway='2001:db8:13:2::fe' interface='ppp1'/>
+  <route hosts='C2' destination='2001:db8:1::/64' gateway='2001:db8:13:2::fe' interface='ppp1'/>
+  <route hosts='C3' destination='2001:db8:1::/64' gateway='2001:db8:13:3::fe' interface='ppp1'/>
+  <route hosts='C3' destination='2001:db8:2::/64' gateway='2001:db8:13:3::fe' interface='ppp1'/>
+  <route hosts='C4' destination='2001:db8:1::/64' gateway='2001:db8:13:4::fe' interface='ppp1'/>
+  <route hosts='C4' destination='2001:db8:2::/64' gateway='2001:db8:13:4::fe' interface='ppp1'/>
+  <route hosts='RC5' destination='2001:db8:1::/64' gateway='2001:db8:13:2::ff' interface='ppp1'/>
+  <route hosts='RC5' destination='2001:db8:2::/64' gateway='2001:db8:13:2::ff' interface='ppp1'/>
+  <route hosts='RC5' destination='2001:db8:4::/64' gateway='2001:db8:13:3::ff' interface='ppp2'/>
+  <route hosts='RC5' destination='2001:db8:5::/64' gateway='2001:db8:13:4::ff' interface='ppp3'/>
+  <route hosts='RC5' destination='2001:db8:10::/64' gateway='2001:db8:13:1::ff' interface='ppp0'/>
+  <route hosts='RC5' destination='2001:db8:30::/64' gateway='2001:db8:13:2::ff' interface='ppp1'/>
+  <route hosts='RC5' destination='2001:db8:40::/64' gateway='2001:db8:13:3::ff' interface='ppp2'/>
+  <route hosts='RC5' destination='2001:db8:50::/64' gateway='2001:db8:13:4::ff' interface='ppp3'/>
+</config>
