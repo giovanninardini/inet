@@ -1,0 +1,4 @@
+<config>
+  <interface hosts='A' names='ppp0' address='2001:db8::1' netmask='64'/>
+  <interface hosts='B' names='ppp0' address='2001:db8::2' netmask='64'/>
+</config>

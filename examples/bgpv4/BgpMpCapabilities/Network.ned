@@ -2,6 +2,7 @@ package inet.examples.bgpv4.BgpMpCapabilities;
 
 import inet.common.misc.ThruputMeteringChannel;
 import inet.networklayer.configurator.ipv4.Ipv4NetworkConfigurator;
+import inet.networklayer.configurator.ipv6.Ipv6NetworkConfigurator;
 import inet.visualizer.canvas.integrated.IntegratedCanvasVisualizer;
 
 network BgpNetwork
@@ -27,6 +28,13 @@ network BgpNetwork
                 addStaticRoutes = false;
                 addDefaultRoutes = false;
                 addSubnetRoutes = false;
+        }
+        configurator6: Ipv6NetworkConfigurator {
+            parameters:
+                @display("p=100,300;is=s");
+                config = xmldoc("IPv6Config.xml");
+                addStaticRoutes = false;
+                addDefaultRoutes = false;
         }
         A: BGPRouterSimple {
             parameters:

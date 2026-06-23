@@ -12,7 +12,7 @@ import inet.linklayer.contract.IPppInterface;
 import inet.networklayer.common.InterfaceTable;
 import inet.networklayer.ipv4.Ipv4NetworkLayer;
 import inet.networklayer.ipv4.Ipv4RoutingTable;
-import inet.networklayer.ipv6.Ipv6RoutingTable;
+import inet.networklayer.ipv6.Ipv6NetworkLayer;
 import inet.routing.bgpv4.Bgp;
 import inet.transportlayer.contract.ITcp;
 
@@ -28,7 +28,8 @@ module BGPRouterSimple
         @display("i=abstract/router");
         *.interfaceTableModule = default(absPath(".interfaceTable"));
         *.routingTableModule = default(absPath(".routingTable"));
-        *.ipv6RoutingTableModule = default(absPath(".routingTable6"));
+        *.ipv6RoutingTableModule = default(absPath(".ipv6.routingTable"));
+        ipv6.interfaceTableModule = default(absPath(".interfaceTable"));
     gates:
         inout pppg[] @labels(PppFrame-conn);
     submodules:
@@ -41,12 +42,6 @@ module BGPRouterSimple
                 forwarding = true;
                 routerId = "auto";
                 @display("p=100,200;is=s");
-        }
-        routingTable6: Ipv6RoutingTable {
-            parameters:
-                forwarding = true;
-                useAdminDist = true;
-                @display("p=100,300;is=s");
         }
         bgp: Bgp {
             parameters:
@@ -73,6 +68,11 @@ module BGPRouterSimple
             parameters:
                 @display("p=325,400;i=block/layer;q=queue");
         }
+        ipv6: Ipv6NetworkLayer {
+            parameters:
+                forwarding = true;
+                @display("p=475,400;i=block/layer;q=queue");
+        }
         nl: MessageDispatcher {
             parameters:
                 @display("b=300,5,,,,1;p=325,480");
@@ -94,9 +94,13 @@ module BGPRouterSimple
 
         tn.out++ --> { @display("m=s"); } --> ipv4.transportIn;
         tn.in++ <-- { @display("m=s"); } <-- ipv4.transportOut;
+        tn.out++ --> { @display("m=s"); } --> ipv6.transportIn;
+        tn.in++ <-- { @display("m=s"); } <-- ipv6.transportOut;
 
         ipv4.ifOut --> { @display("m=s"); } --> nl.in++;
         ipv4.ifIn <-- { @display("m=s"); } <-- nl.out++;
+        ipv6.ifOut --> { @display("m=s"); } --> nl.in++;
+        ipv6.ifIn <-- { @display("m=s"); } <-- nl.out++;
 
         // connections to network outside
         for i=0..sizeof(pppg)-1 {
