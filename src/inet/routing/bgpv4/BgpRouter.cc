@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "inet/common/ModuleAccess.h"
+#include "inet/networklayer/ipv6/Ipv6InterfaceData.h"
 #include "inet/routing/bgpv4/BgpSession.h"
 
 namespace inet {
@@ -52,6 +53,15 @@ static std::string addressFamilyToString(const BgpAddressFamily& family)
         safi = std::to_string(family.safi);
 
     return afi + "-" + safi;
+}
+
+static Ipv6Address getGlobalIpv6Address(NetworkInterface *interfaceEntry)
+{
+    const auto *ipv6Data = interfaceEntry->getProtocolData<Ipv6InterfaceData>();
+    Ipv6Address address = ipv6Data->getGlblAddress();
+    if (address.isUnspecified())
+        throw cRuntimeError("BGP cannot select an IPv6 next hop on interface %s", interfaceEntry->getInterfaceFullPath().c_str());
+    return address;
 }
 
 static std::vector<BgpAddressFamily> getMultiprotocolCapabilities(const BgpOpenMessage& msg)
@@ -827,8 +837,11 @@ void BgpRouter::processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdateP
         }
 
         BgpProcessResult decisionProcessResult = asLoopDetection(entry, myAsId);
-        if (decisionProcessResult == ASLOOP_NO_DETECTED)
-            decisionProcess(msg, entry, sessionIndex);
+        if (decisionProcessResult == ASLOOP_NO_DETECTED) {
+            decisionProcessResult = decisionProcess(msg, entry, sessionIndex);
+            if (decisionProcessResult == NEW_ROUTE_ADDED)
+                updateSendProcess(decisionProcessResult, sessionIndex, entry);
+        }
         else
             delete entry;
     }
@@ -1303,7 +1316,10 @@ void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex,
         mpReach->setAfi(AFI_IPV6);
         mpReach->setSafi(SAFI_UNICAST);
         mpReach->setNextHopNetworkAddressLength(16);
-        mpReach->setNextHopIpv6Address(entry->getNextHop());
+        if (sourceSessionType == EGP || _BGPSessions[sessionIndex]->getNextHopSelf())
+            mpReach->setNextHopIpv6Address(getGlobalIpv6Address(targetSession->getLinkIntf()));
+        else
+            mpReach->setNextHopIpv6Address(entry->getNextHop());
         mpReach->setNumberOfSnpas(0);
 
         BgpMpNlri nlri;
