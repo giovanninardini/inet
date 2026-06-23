@@ -41,7 +41,7 @@
         <Router interAddr="172.13.4.255" addressFamilies="ipv6-unicast"> <!--Router C4-->
             <Neighbor address="10.10.50.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
         </Router>
-        <DenyRouteOUT Address="172.10.8.0" Netmask="255.255.255.0"/>
+        <DenyRouteOUT Address="2001:db8:4::/64" afi="ipv6" safi="unicast"/>
     </AS>
 
     <AS id="60444">

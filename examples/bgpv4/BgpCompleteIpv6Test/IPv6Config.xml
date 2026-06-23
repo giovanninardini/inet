@@ -34,16 +34,22 @@
   <interface hosts='HE11' names='eth0' address='2001:db8:5::11'/>
   <interface hosts='HE12' names='eth0' address='2001:db8:5::12'/>
 
+  <!-- Host default routes send application traffic to the local edge router. -->
   <route hosts='HA11 HA12' destination='::/0' gateway='2001:db8:1::1' interface='eth0'/>
   <route hosts='HB11 HB12' destination='::/0' gateway='2001:db8:2::1' interface='eth0'/>
   <route hosts='HD11 HD12' destination='::/0' gateway='2001:db8:4::1' interface='eth0'/>
   <route hosts='HE11 HE12' destination='::/0' gateway='2001:db8:5::1' interface='eth0'/>
 
+  <!-- LAN routes keep each edge router and its attached hosts on the local subnet. -->
   <route hosts='RA3 HA11 HA12' destination='2001:db8:1::/64' interface='eth0'/>
   <route hosts='B1 HB11 HB12' destination='2001:db8:2::/64' interface='eth0'/>
   <route hosts='D1 HD11 HD12' destination='2001:db8:4::/64' interface='eth0'/>
   <route hosts='E1 HE11 HE12' destination='2001:db8:5::/64' interface='eth0'/>
 
+  <!--
+    Helper routes inside AS 60111 provide underlay reachability between A1/A2 and RA3.
+    MP-BGP still carries the customer prefixes between ASes.
+  -->
   <route hosts='A1' destination='2001:db8:1::/64' gateway='2001:db8:1:10::fe' interface='ppp1'/>
   <route hosts='A2' destination='2001:db8:1::/64' gateway='2001:db8:1:20::fe' interface='ppp1'/>
   <route hosts='RA3' destination='2001:db8:10::/64' gateway='2001:db8:1:10::ff' interface='ppp0'/>
@@ -52,6 +58,10 @@
   <route hosts='RA3' destination='2001:db8:4::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
   <route hosts='RA3' destination='2001:db8:5::/64' gateway='2001:db8:1:20::ff' interface='ppp1'/>
 
+  <!--
+    Helper routes inside AS 60333 connect C1-C4 through RC5.
+    They model internal AS reachability so MP-BGP-learned next hops can be resolved.
+  -->
   <route hosts='C1' destination='2001:db8:4::/64' gateway='2001:db8:13:1::fe' interface='ppp1'/>
   <route hosts='C2' destination='2001:db8:4::/64' gateway='2001:db8:13:2::fe' interface='ppp1'/>
   <route hosts='C3' destination='2001:db8:5::/64' gateway='2001:db8:13:3::fe' interface='ppp1'/>
@@ -63,7 +73,7 @@
   <route hosts='C3' destination='2001:db8:2::/64' gateway='2001:db8:13:3::fe' interface='ppp1'/>
   <route hosts='C4' destination='2001:db8:1::/64' gateway='2001:db8:13:4::fe' interface='ppp1'/>
   <route hosts='C4' destination='2001:db8:2::/64' gateway='2001:db8:13:4::fe' interface='ppp1'/>
-  <route hosts='RC5' destination='2001:db8:1::/64' gateway='2001:db8:13:2::ff' interface='ppp1'/>
+  <route hosts='RC5' destination='2001:db8:1::/64' gateway='2001:db8:13:1::ff' interface='ppp0'/>
   <route hosts='RC5' destination='2001:db8:2::/64' gateway='2001:db8:13:2::ff' interface='ppp1'/>
   <route hosts='RC5' destination='2001:db8:4::/64' gateway='2001:db8:13:3::ff' interface='ppp2'/>
   <route hosts='RC5' destination='2001:db8:5::/64' gateway='2001:db8:13:4::ff' interface='ppp3'/>

@@ -116,6 +116,9 @@ BgpRouter::~BgpRouter(void)
 
     for (auto& elem : _prefixListINOUT)
         delete elem;
+
+    for (auto& elem : _prefixIpv6ListINOUT)
+        delete elem;
 }
 
 void BgpRouter::printSessionSummary()
@@ -388,6 +391,23 @@ void BgpRouter::addToPrefixList(std::string nodeName, BgpRoutingTableEntry *entr
         _prefixListIN.push_back(entry);
         _prefixListOUT.push_back(entry);
         _prefixListINOUT.push_back(entry);
+    }
+}
+
+void BgpRouter::addToIpv6PrefixList(std::string nodeName, BgpIpv6RoutingTableEntry *entry)
+{
+    if (nodeName == "DenyRouteIN") {
+        _prefixIpv6ListIN.push_back(entry);
+        _prefixIpv6ListINOUT.push_back(entry);
+    }
+    else if (nodeName == "DenyRouteOUT") {
+        _prefixIpv6ListOUT.push_back(entry);
+        _prefixIpv6ListINOUT.push_back(entry);
+    }
+    else {
+        _prefixIpv6ListIN.push_back(entry);
+        _prefixIpv6ListOUT.push_back(entry);
+        _prefixIpv6ListINOUT.push_back(entry);
     }
 }
 
@@ -753,21 +773,27 @@ BgpProcessResult BgpRouter::asLoopDetection(BgpIpv6RoutingTableEntry *entry, AsI
 
 bool BgpRouter::isInIpv6Table(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const
 {
-    for (auto route : rtTable) {
+    return findIpv6TableIndex(rtTable, entry) != (unsigned long)-1;
+}
+
+unsigned long BgpRouter::findIpv6TableIndex(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const
+{
+    for (unsigned long index = 0; index < rtTable.size(); index++) {
+        auto route = rtTable[index];
         if (route->getDestination() == entry->getDestination() &&
             route->getPrefixLength() == entry->getPrefixLength())
         {
-            return true;
+            return index;
         }
     }
-    return false;
+    return -1;
 }
 
 BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
 {
     (void)msg;
 
-    if (isInIpv6Table(bgpIpv6RoutingTable, entry)) {
+    if (isInIpv6PrefixList(_prefixIpv6ListIN, entry) != (unsigned long)-1 || isInASList(_ASListIN, entry)) {
         delete entry;
         return RESULT0;
     }
@@ -777,6 +803,19 @@ BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpIpv6
         entry->setIBgpLearned(true);
 
     entry->setLearnedSessionId(sessionIndex);
+
+    unsigned long bgpIndex = findIpv6TableIndex(bgpIpv6RoutingTable, entry);
+    if (bgpIndex != (unsigned long)-1) {
+        BgpIpv6RoutingTableEntry *oldEntry = bgpIpv6RoutingTable[bgpIndex];
+        if (tieBreakingProcess(oldEntry, entry)) {
+            delete entry;
+            return RESULT0;
+        }
+        removeInstalledIpv6Route(oldEntry);
+        bgpIpv6RoutingTable.erase(bgpIpv6RoutingTable.begin() + bgpIndex);
+        delete oldEntry;
+    }
+
     bgpIpv6RoutingTable.push_back(entry);
     installIpv6Route(entry, sessionIndex);
 
@@ -1148,6 +1187,20 @@ bool BgpRouter::tieBreakingProcess(BgpRoutingTableEntry *oldEntry, BgpRoutingTab
     return true;
 }
 
+bool BgpRouter::tieBreakingProcess(BgpIpv6RoutingTableEntry *oldEntry, BgpIpv6RoutingTableEntry *entry)
+{
+    if (entry->getLocalPreference() > oldEntry->getLocalPreference())
+        return false;
+
+    if (entry->getASCount() < oldEntry->getASCount())
+        return false;
+
+    if (entry->getPathType() < oldEntry->getPathType())
+        return false;
+
+    return true;
+}
+
 void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex, BgpRoutingTableEntry *entry)
 {
     // Don't send the update Message if the route exists in listOUTTable
@@ -1255,7 +1308,9 @@ void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex,
 
         if ((isSourceSession && !isStartupAdvertisement) ||
             isOtherStartupSession ||
-            !targetSession->isEstablished())
+            !targetSession->isEstablished() ||
+            isInIpv6PrefixList(_prefixIpv6ListOUT, entry) != (unsigned long)-1 ||
+            isInASList(_ASListOUT, entry))
             continue;
 
         if (!targetSession->hasNegotiatedAddressFamily(ipv6Unicast)) {
@@ -1316,7 +1371,7 @@ void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex,
         mpReach->setAfi(AFI_IPV6);
         mpReach->setSafi(SAFI_UNICAST);
         mpReach->setNextHopNetworkAddressLength(16);
-        if (sourceSessionType == EGP || _BGPSessions[sessionIndex]->getNextHopSelf())
+        if (sourceSessionType == EGP || targetSession->getNextHopSelf())
             mpReach->setNextHopIpv6Address(getGlobalIpv6Address(targetSession->getLinkIntf()));
         else
             mpReach->setNextHopIpv6Address(entry->getNextHop());
@@ -1394,6 +1449,16 @@ unsigned long BgpRouter::isInTable(std::vector<BgpRoutingTableEntry *> rtTable, 
     return -1;
 }
 
+unsigned long BgpRouter::isInIpv6PrefixList(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const
+{
+    for (unsigned long i = 0; i < rtTable.size(); i++) {
+        BgpIpv6RoutingTableEntry *entryCur = rtTable[i];
+        if (entry->getDestination().matches(entryCur->getDestination(), entryCur->getPrefixLength()))
+            return i;
+    }
+    return -1;
+}
+
 /*return true if the AS is found, false else*/
 bool BgpRouter::isInASList(std::vector<AsId> ASList, BgpRoutingTableEntry *entry)
 {
@@ -1402,6 +1467,17 @@ bool BgpRouter::isInASList(std::vector<AsId> ASList, BgpRoutingTableEntry *entry
             if ((elem) == entry->getAS(i)) {
                 return true;
             }
+        }
+    }
+    return false;
+}
+
+bool BgpRouter::isInASList(std::vector<AsId> ASList, BgpIpv6RoutingTableEntry *entry)
+{
+    for (auto& elem : ASList) {
+        for (unsigned int i = 0; i < entry->getASCount(); i++) {
+            if (elem == entry->getAS(i))
+                return true;
         }
     }
     return false;

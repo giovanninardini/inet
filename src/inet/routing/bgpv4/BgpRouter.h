@@ -62,6 +62,9 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     RoutingTableEntryVector _prefixListIN;
     RoutingTableEntryVector _prefixListOUT;
     RoutingTableEntryVector _prefixListINOUT; // store union of pointers in _prefixListIN and _prefixListOUT
+    Ipv6RoutingTableEntryVector _prefixIpv6ListIN;
+    Ipv6RoutingTableEntryVector _prefixIpv6ListOUT;
+    Ipv6RoutingTableEntryVector _prefixIpv6ListINOUT; // store union of pointers in _prefixIpv6ListIN and _prefixIpv6ListOUT
     std::vector<AsId> _ASListIN;
     std::vector<AsId> _ASListOUT;
 
@@ -102,6 +105,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void setPeerAddressFamilies(Ipv4Address peer, const std::vector<BgpAddressFamily>& families);
     void applyAddressFamilyDefaults();
     void addToPrefixList(std::string nodeName, BgpRoutingTableEntry *entry);
+    void addToIpv6PrefixList(std::string nodeName, BgpIpv6RoutingTableEntry *entry);
     void addToAsList(std::string nodeName, AsId id);
     void setNextHopSelf(Ipv4Address peer, bool nextHopSelf);
     void setLocalPreference(Ipv4Address peer, int localPref);
@@ -179,9 +183,12 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
      * \return bool, true if this process changed the route, false else
      */
     bool tieBreakingProcess(BgpRoutingTableEntry *oldEntry, BgpRoutingTableEntry *entry);
+    bool tieBreakingProcess(BgpIpv6RoutingTableEntry *oldEntry, BgpIpv6RoutingTableEntry *entry);
 
     bool isInASList(std::vector<AsId> ASList, BgpRoutingTableEntry *entry);
+    bool isInASList(std::vector<AsId> ASList, BgpIpv6RoutingTableEntry *entry);
     unsigned long isInTable(std::vector<BgpRoutingTableEntry *> rtTable, BgpRoutingTableEntry *entry);
+    unsigned long isInIpv6PrefixList(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const;
 
     bool ospfExist(IIpv4RoutingTable *rtTable);
     // check if the route is in OSPF external Ipv4RoutingTable
@@ -200,6 +207,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
      */
     BgpProcessResult decisionProcess(const BgpUpdateMessage& msg, BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex);
     bool isInIpv6Table(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const;
+    unsigned long findIpv6TableIndex(const std::vector<BgpIpv6RoutingTableEntry *>& rtTable, const BgpIpv6RoutingTableEntry *entry) const;
     void processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdatePathAttributesMpReachNlri& mpReach, SessionId sessionIndex);
     void processMpUnreachNlri(const BgpUpdatePathAttributesMpUnreachNlri& mpUnreach, SessionId sessionIndex);
     void installIpv6Route(BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex);

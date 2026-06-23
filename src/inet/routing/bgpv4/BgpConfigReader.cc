@@ -50,6 +50,8 @@ static Ipv6Address parseIpv6Prefix(const cXMLElement& networkConfig, const char 
 
     const char *prefixLengthAttr = networkConfig.getAttribute("prefixLength");
     if (!prefixLengthAttr || !*prefixLengthAttr)
+        prefixLengthAttr = networkConfig.getAttribute("PrefixLength");
+    if (!prefixLengthAttr || !*prefixLengthAttr)
         throw cRuntimeError("BGP Error: IPv6 Network '%s' must include '/prefixLength' or a 'prefixLength' attribute at %s",
                 address, networkConfig.getSourceLocation());
 
@@ -329,10 +331,38 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
             }
         }
         else if (nodeName == "DenyRoute" || nodeName == "DenyRouteIN" || nodeName == "DenyRouteOUT") {
-            BgpRoutingTableEntry *entry = new BgpRoutingTableEntry(); // FIXME Who will delete this entry?
-            entry->setDestination(Ipv4Address((elem)->getAttribute("Address")));
-            entry->setNetmask(Ipv4Address((elem)->getAttribute("Netmask")));
-            bgpRouter->addToPrefixList(nodeName, entry);
+            const char *address = elem->getAttribute("Address");
+            if (!address || !*address)
+                address = elem->getAttribute("address");
+            if (!address || !*address)
+                throw cRuntimeError("BGP Error: attribute 'Address' is mandatory in '%s' at %s",
+                        nodeName.c_str(), elem->getSourceLocation());
+
+            auto families = getAddressFamilyAttr(*elem);
+            if (families.empty()) {
+                BgpRoutingTableEntry *entry = new BgpRoutingTableEntry(); // FIXME Who will delete this entry?
+                entry->setDestination(Ipv4Address(address));
+                entry->setNetmask(Ipv4Address(elem->getAttribute("Netmask")));
+                bgpRouter->addToPrefixList(nodeName, entry);
+            }
+            else {
+                for (auto family : families) {
+                    if (family.afi == AFI_IPV4 && family.safi == SAFI_UNICAST) {
+                        BgpRoutingTableEntry *entry = new BgpRoutingTableEntry(); // FIXME Who will delete this entry?
+                        entry->setDestination(Ipv4Address(address));
+                        entry->setNetmask(Ipv4Address(elem->getAttribute("Netmask")));
+                        bgpRouter->addToPrefixList(nodeName, entry);
+                    }
+                    else if (isIpv6Unicast(family)) {
+                        int prefixLength = -1;
+                        Ipv6Address prefix = parseIpv6Prefix(*elem, address, prefixLength);
+                        auto entry = new BgpIpv6RoutingTableEntry(prefix, prefixLength);
+                        bgpRouter->addToIpv6PrefixList(nodeName, entry);
+                    }
+                    else
+                        throw cRuntimeError("BGP Error: unsupported DenyRoute address family at %s", elem->getSourceLocation());
+                }
+            }
         }
         else if (nodeName == "DenyAS" || nodeName == "DenyASIN" || nodeName == "DenyASOUT") {
             AsId ASCur = atoi((elem)->getNodeValue());
