@@ -69,6 +69,14 @@ static Ipv6Address parseIpv6NextHop(const cXMLElement& networkConfig)
     return Ipv6Address::UNSPECIFIED_ADDRESS;
 }
 
+static simtime_t parseIpv6WithdrawTime(const cXMLElement& networkConfig)
+{
+    const char *withdrawTime = networkConfig.getAttribute("withdrawTime");
+    if (withdrawTime && *withdrawTime)
+        return SimTime::parse(withdrawTime);
+    return -1;
+}
+
 BgpConfigReader::BgpConfigReader(cModule *bgpModule, IInterfaceTable *ift) :
     bgpModule(bgpModule), ift(ift)
 {
@@ -286,8 +294,9 @@ void BgpConfigReader::loadASConfig(cXMLElementList& ASConfig)
                                     int prefixLength = -1;
                                     Ipv6Address prefix = parseIpv6Prefix(*entry, address, prefixLength);
                                     Ipv6Address nextHop = parseIpv6NextHop(*entry);
+                                    simtime_t withdrawTime = parseIpv6WithdrawTime(*entry);
                                     bgpRouter->addAddressFamily(family);
-                                    bgpRouter->addToAdvertiseIpv6List(prefix, prefixLength, nextHop);
+                                    bgpRouter->addToAdvertiseIpv6List(prefix, prefixLength, nextHop, withdrawTime);
                                 }
                                 else
                                     throw cRuntimeError("BGP Error: unsupported Network address family at %s", entry->getSourceLocation());

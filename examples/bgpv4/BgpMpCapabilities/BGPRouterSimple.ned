@@ -12,6 +12,7 @@ import inet.linklayer.contract.IPppInterface;
 import inet.networklayer.common.InterfaceTable;
 import inet.networklayer.ipv4.Ipv4NetworkLayer;
 import inet.networklayer.ipv4.Ipv4RoutingTable;
+import inet.networklayer.ipv6.Ipv6RoutingTable;
 import inet.routing.bgpv4.Bgp;
 import inet.transportlayer.contract.ITcp;
 
@@ -27,6 +28,7 @@ module BGPRouterSimple
         @display("i=abstract/router");
         *.interfaceTableModule = default(absPath(".interfaceTable"));
         *.routingTableModule = default(absPath(".routingTable"));
+        *.ipv6RoutingTableModule = default(absPath(".routingTable6"));
     gates:
         inout pppg[] @labels(PppFrame-conn);
     submodules:
@@ -39,6 +41,12 @@ module BGPRouterSimple
                 forwarding = true;
                 routerId = "auto";
                 @display("p=100,200;is=s");
+        }
+        routingTable6: Ipv6RoutingTable {
+            parameters:
+                forwarding = true;
+                useAdminDist = true;
+                @display("p=100,300;is=s");
         }
         bgp: Bgp {
             parameters:

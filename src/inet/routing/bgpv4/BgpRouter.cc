@@ -82,22 +82,29 @@ static std::vector<BgpAddressFamily> getMultiprotocolCapabilities(const BgpOpenM
     return families;
 }
 
-BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4RoutingTable *rt)
+BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4RoutingTable *rt, Ipv6RoutingTable *rt6)
 {
     this->bgpModule = bgpModule;
     this->ift = ift;
     this->rt = rt;
+    this->rt6 = rt6;
 
     ospfModule = findModuleFromPar<ospfv2::Ospfv2>(bgpModule->par("ospfRoutingModule"), bgpModule);
 }
 
 BgpRouter::~BgpRouter(void)
 {
+    for (auto& elem : ipv6WithdrawRoutes)
+        bgpModule->cancelAndDelete(elem.first);
+    ipv6WithdrawRoutes.clear();
+
     for (auto& elem : _BGPSessions)
         delete (elem).second;
 
-    for (auto& elem : bgpIpv6RoutingTable)
+    for (auto& elem : bgpIpv6RoutingTable) {
+        removeInstalledIpv6Route(elem);
         delete elem;
+    }
 
     for (auto& elem : _prefixListINOUT)
         delete elem;
@@ -297,7 +304,7 @@ void BgpRouter::addToAdvertiseList(Ipv4Address address)
     bgpRoutingTable.push_back(BGPEntry);
 }
 
-void BgpRouter::addToAdvertiseIpv6List(const Ipv6Address& address, int prefixLength, const Ipv6Address& nextHop)
+void BgpRouter::addToAdvertiseIpv6List(const Ipv6Address& address, int prefixLength, const Ipv6Address& nextHop, simtime_t withdrawTime)
 {
     for (auto route : bgpIpv6RoutingTable) {
         if (route->getDestination() == address && route->getPrefixLength() == prefixLength)
@@ -312,6 +319,15 @@ void BgpRouter::addToAdvertiseIpv6List(const Ipv6Address& address, int prefixLen
     entry->setLocalPreference(bgpModule->par("localPreference").intValue());
     bgpIpv6RoutingTable.push_back(entry);
     advertiseIpv6List.push_back(address);
+
+    if (withdrawTime >= SIMTIME_ZERO) {
+        auto timer = new cMessage("MP-BGP IPv6 withdraw", MP_BGP_IPV6_WITHDRAW_KIND);
+        // Local configured route withdrawal is router-scoped. The timer does
+        // not pretend to belong to an arbitrary BGP session; the map below
+        // carries the route that must be withdrawn when the timer fires.
+        ipv6WithdrawRoutes[timer] = entry;
+        bgpModule->scheduleAt(withdrawTime, timer);
+    }
 }
 
 void BgpRouter::addAddressFamily(const BgpAddressFamily& family)
@@ -657,9 +673,19 @@ void BgpRouter::processMessage(const BgpUpdateMessage& msg)
     session->getFSM()->UpdateMsgEvent();
 
     for (size_t i = 0; i < msg.getPathAttributesArraySize(); i++) {
-        if (msg.getPathAttributes(i)->getTypeCode() == BgpUpdateAttributeTypeCode::MP_REACH_NLRI) {
-            auto& mpReach = *check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(msg.getPathAttributes(i));
-            processMpReachNlri(msg, mpReach, _currSessionId);
+        switch (msg.getPathAttributes(i)->getTypeCode()) {
+            case BgpUpdateAttributeTypeCode::MP_REACH_NLRI: {
+                auto& mpReach = *check_and_cast<const BgpUpdatePathAttributesMpReachNlri *>(msg.getPathAttributes(i));
+                processMpReachNlri(msg, mpReach, _currSessionId);
+                break;
+            }
+            case BgpUpdateAttributeTypeCode::MP_UNREACH_NLRI: {
+                auto& mpUnreach = *check_and_cast<const BgpUpdatePathAttributesMpUnreachNlri *>(msg.getPathAttributes(i));
+                processMpUnreachNlri(mpUnreach, _currSessionId);
+                break;
+            }
+            default:
+                break;
         }
     }
 
@@ -729,8 +755,10 @@ bool BgpRouter::isInIpv6Table(const std::vector<BgpIpv6RoutingTableEntry *>& rtT
     return false;
 }
 
-BgpProcessResult BgpRouter::decisionProcess(BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
+BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
 {
+    (void)msg;
+
     if (isInIpv6Table(bgpIpv6RoutingTable, entry)) {
         delete entry;
         return RESULT0;
@@ -742,6 +770,7 @@ BgpProcessResult BgpRouter::decisionProcess(BgpIpv6RoutingTableEntry *entry, Ses
 
     entry->setLearnedSessionId(sessionIndex);
     bgpIpv6RoutingTable.push_back(entry);
+    installIpv6Route(entry, sessionIndex);
 
     EV_INFO << "Accepted MP-BGP IPv6 route " << entry->str()
             << " from peer " << _BGPSessions[sessionIndex]->getPeerAddr().str(false) << "\n";
@@ -801,10 +830,154 @@ void BgpRouter::processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdateP
 
         BgpProcessResult decisionProcessResult = asLoopDetection(entry, myAsId);
         if (decisionProcessResult == ASLOOP_NO_DETECTED)
-            decisionProcess(entry, sessionIndex);
+            decisionProcess(msg, entry, sessionIndex);
         else
             delete entry;
     }
+}
+
+BgpIpv6RoutingTableEntry *BgpRouter::findIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId) const
+{
+    for (auto route : bgpIpv6RoutingTable) {
+        if (route->getDestination() == prefix &&
+            route->getPrefixLength() == prefixLength &&
+            route->getLearnedSessionId() == learnedSessionId)
+        {
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+void BgpRouter::installIpv6Route(BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
+{
+    if (entry->getRoutingTable())
+        return;
+
+    if (!rt6) {
+        EV_INFO << "Keeping MP-BGP IPv6 route " << entry->getDestination() << "/"
+                << entry->getPrefixLength()
+                << " in BGP state because no IPv6 routing table is configured\n";
+        return;
+    }
+
+    entry->setInterface(_BGPSessions[sessionIndex]->getLinkIntf());
+    if (_BGPSessions[sessionIndex]->getType() == IGP)
+        entry->setAdminDist(Ipv6Route::dBGPInternal);
+    else
+        entry->setAdminDist(Ipv6Route::dBGPExternal);
+
+    rt6->addRoutingProtocolRoute(entry);
+    EV_INFO << "Installed MP-BGP IPv6 route " << entry->str() << "\n";
+}
+
+void BgpRouter::removeInstalledIpv6Route(BgpIpv6RoutingTableEntry *entry)
+{
+    Ipv6RoutingTable *routingTable = entry->getRoutingTable();
+    if (!routingTable)
+        return;
+
+    routingTable->removeRoute(entry);
+    EV_INFO << "Removed MP-BGP IPv6 route from IPv6 routing table: "
+            << entry->getDestination() << "/" << entry->getPrefixLength() << "\n";
+}
+
+void BgpRouter::sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
+{
+    BgpAddressFamily ipv6Unicast = makeAddressFamily(AFI_IPV6, SAFI_UNICAST);
+    for (auto& elem : _BGPSessions) {
+        BgpSession *targetSession = elem.second;
+        if (!targetSession->isEstablished())
+            continue;
+
+        if (fromPeer && elem.first == sourceSessionIndex)
+            continue;
+
+        if (!targetSession->hasNegotiatedAddressFamily(ipv6Unicast))
+            continue;
+
+        if (fromPeer && entry->isIBgpLearned() && targetSession->getType() == IGP) {
+            EV_INFO << "BGP Split Horizon: prevent withdrawal propagation of IPv6 network "
+                    << entry->getDestination() << "/" << entry->getPrefixLength();
+            continue;
+        }
+
+        std::vector<BgpUpdatePathAttributes *> content;
+        auto mpUnreach = new BgpUpdatePathAttributesMpUnreachNlri();
+        content.push_back(mpUnreach);
+        mpUnreach->setAfi(AFI_IPV6);
+        mpUnreach->setSafi(SAFI_UNICAST);
+
+        BgpMpNlri nlri;
+        nlri.length = entry->getPrefixLength();
+        nlri.ipv6Prefix = entry->getDestination();
+        mpUnreach->setWithdrawnRoutesArraySize(1);
+        mpUnreach->setWithdrawnRoutes(0, nlri);
+        mpUnreach->setLength(2 + 1 + 1 + (entry->getPrefixLength() + 7) / 8);
+
+        targetSession->sendUpdateMessage(content);
+    }
+}
+
+void BgpRouter::withdrawIpv6Route(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
+{
+    auto routeIt = std::find(bgpIpv6RoutingTable.begin(), bgpIpv6RoutingTable.end(), entry);
+    if (routeIt == bgpIpv6RoutingTable.end())
+        return;
+
+    EV_INFO << "Withdrawing MP-BGP IPv6 route " << entry->getDestination()
+            << "/" << entry->getPrefixLength() << "\n";
+
+    sendMpUnreachNlri(entry, sourceSessionIndex, fromPeer);
+    removeInstalledIpv6Route(entry);
+    bgpIpv6RoutingTable.erase(routeIt);
+    delete entry;
+}
+
+void BgpRouter::processMpUnreachNlri(const BgpUpdatePathAttributesMpUnreachNlri& mpUnreach, SessionId sessionIndex)
+{
+    BgpAddressFamily family;
+    family.afi = mpUnreach.getAfi();
+    family.safi = mpUnreach.getSafi();
+
+    if (family.afi != AFI_IPV6 || family.safi != SAFI_UNICAST) {
+        EV_WARN << "Ignoring unsupported MP_UNREACH_NLRI address family "
+                << addressFamilyToString(family) << "\n";
+        return;
+    }
+
+    if (!_BGPSessions[sessionIndex]->hasNegotiatedAddressFamily(family)) {
+        EV_WARN << "Ignoring unnegotiated MP_UNREACH_NLRI address family "
+                << addressFamilyToString(family)
+                << " from peer " << _BGPSessions[sessionIndex]->getPeerAddr().str(false) << "\n";
+        return;
+    }
+
+    for (size_t i = 0; i < mpUnreach.getWithdrawnRoutesArraySize(); i++) {
+        const BgpMpNlri& withdrawn = mpUnreach.getWithdrawnRoutes(i);
+        BgpIpv6RoutingTableEntry *entry = findIpv6Route(withdrawn.ipv6Prefix, withdrawn.length, sessionIndex);
+        if (!entry) {
+            EV_INFO << "Ignoring MP_UNREACH_NLRI for unknown IPv6 route "
+                    << withdrawn.ipv6Prefix << "/" << (int)withdrawn.length << "\n";
+            continue;
+        }
+
+        withdrawIpv6Route(entry, sessionIndex, true);
+    }
+}
+
+void BgpRouter::processIpv6WithdrawTimer(cMessage *timer)
+{
+    // Timer ownership is kept separate from route ownership: the message key
+    // identifies the local IPv6 route, and withdrawIpv6Route() removes the
+    // route from BGP state, the IPv6 routing table, and negotiated peers.
+    auto timerIt = ipv6WithdrawRoutes.find(timer);
+    if (timerIt == ipv6WithdrawRoutes.end())
+        throw cRuntimeError("Unknown MP-BGP IPv6 withdraw timer");
+
+    BgpIpv6RoutingTableEntry *entry = timerIt->second;
+    ipv6WithdrawRoutes.erase(timerIt);
+    withdrawIpv6Route(entry, 0, false);
 }
 
 /* add entry to routing table, or delete entry */
@@ -1367,6 +1540,13 @@ void BgpRouter::printUpdateMessage(const BgpUpdateMessage& updateMsg)
                 auto& attr = *check_and_cast<const BgpUpdatePathAttributesMpUnreachNlri *>(updateMsg.getPathAttributes(i));
                 EV_INFO << "    MP_UNREACH_NLRI: AFI " << attr.getAfi() << " SAFI " << attr.getSafi()
                         << " withdrawn count " << attr.getWithdrawnRoutesArraySize() << "\n";
+                for (size_t routeIndex = 0; routeIndex < attr.getWithdrawnRoutesArraySize(); routeIndex++) {
+                    const BgpMpNlri& nlri = attr.getWithdrawnRoutes(routeIndex);
+                    if (attr.getAfi() == AFI_IPV6)
+                        EV_INFO << "      Withdrawn NLRI: " << nlri.ipv6Prefix << "/" << (int)nlri.length << "\n";
+                    else
+                        EV_INFO << "      Withdrawn NLRI: " << nlri.ipv4Prefix << "/" << (int)nlri.length << "\n";
+                }
                 break;
             }
         }

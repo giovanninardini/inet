@@ -22,6 +22,7 @@ class INET_API Bgp : public RoutingProtocolBase, protected cListener
 {
   private:
     ModuleRefByPar<IIpv4RoutingTable> rt;
+    ModuleRefByPar<Ipv6RoutingTable> rt6;
     ModuleRefByPar<IInterfaceTable> ift;
     BgpRouter *bgpRouter = nullptr; // data structure to fill in
     cMessage *startupTimer = nullptr; // timer for delayed startup

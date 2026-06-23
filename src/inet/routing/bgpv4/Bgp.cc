@@ -32,6 +32,7 @@ void Bgp::initialize(int stage)
     if (stage == INITSTAGE_LOCAL) {
         ift.reference(this, "interfaceTableModule", true);
         rt.reference(this, "routingTableModule", true);
+        rt6.reference(this, "ipv6RoutingTableModule", false);
 
         startupTimer = new cMessage("BGP-startup");
     }
@@ -116,7 +117,7 @@ void Bgp::removeBgpRoutes()
 void Bgp::createBgpRouter()
 {
     ASSERT(bgpRouter == nullptr);
-    bgpRouter = new BgpRouter(this, ift, rt);
+    bgpRouter = new BgpRouter(this, ift, rt, rt6.getNullable());
 
     // read BGP configuration
     cXMLElement *bgpConfig = par("bgpConfig");
@@ -129,6 +130,17 @@ void Bgp::createBgpRouter()
 
 void Bgp::handleTimer(cMessage *timer)
 {
+    if (timer->getKind() == MP_BGP_IPV6_WITHDRAW_KIND) {
+        // This timer belongs to the BGP router, not to one peer session:
+        // it withdraws a locally configured MP-BGP IPv6 route from all
+        // negotiated peers. The route itself is tracked by BgpRouter.
+        EV_INFO << "Processing MP-BGP IPv6 Withdraw timer" << std::endl;
+        if (bgpRouter)
+            bgpRouter->processIpv6WithdrawTimer(timer);
+        delete timer;
+        return;
+    }
+
     BgpSession *pSession = (BgpSession *)timer->getContextPointer();
     if (pSession) {
         switch (timer->getKind()) {

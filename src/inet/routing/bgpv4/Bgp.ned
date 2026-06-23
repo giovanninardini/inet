@@ -23,6 +23,7 @@ simple Bgp extends SimpleModule like IBgp
         @class(Bgp);
         string interfaceTableModule;
         string routingTableModule;
+        string ipv6RoutingTableModule = default(""); // Optional Ipv6RoutingTable for MP-BGP IPv6 route installation
         string ospfRoutingModule;
         volatile double startupTime @unit(s) = default(0s); // Delay before starting BGP
         xml bgpConfig;
@@ -40,4 +41,3 @@ simple Bgp extends SimpleModule like IBgp
         input socketIn @messageKinds(inet::TcpStatusInd);
         output socketOut @messageKinds(inet::TcpCommandCode);
 }
-

@@ -22,4 +22,7 @@
     <message occurence="1">
         <fieldValue name="name" value="BgpUpdate"/>
     </message>
+    <message occurence="1">
+        <fieldValue name="name" value="BgpUpdate"/>
+    </message>
 </checker>

@@ -27,6 +27,7 @@ enum BgpSelfMsgKind
     CONNECT_RETRY_KIND = 82;
     HOLD_TIME_KIND = 83;
     KEEP_ALIVE_KIND = 89;
+    MP_BGP_IPV6_WITHDRAW_KIND = 100;
 }
 
 enum BgpProcessResult
