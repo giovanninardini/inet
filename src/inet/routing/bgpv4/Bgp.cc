@@ -46,6 +46,7 @@ void Bgp::finish()
     }
 
     bgpRouter->recordStatistics();
+    bgpRouter->removeInstalledIpv6Routes();
 }
 
 void Bgp::handleMessageWhenUp(cMessage *msg)
@@ -97,8 +98,10 @@ void Bgp::stopBgp(bool abort)
 {
     cancelEvent(startupTimer);
     removeBgpRoutes();
-    if (bgpRouter)
+    if (bgpRouter) {
+        bgpRouter->removeInstalledIpv6Routes();
         bgpRouter->closeSessions(abort);
+    }
     delete bgpRouter;
     bgpRouter = nullptr;
 }

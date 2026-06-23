@@ -89,6 +89,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void addWatches();
     void recordStatistics();
     void closeSessions(bool abort);
+    void removeInstalledIpv6Routes();
     void processIpv6WithdrawTimer(cMessage *timer);
 
     SessionId createEbgpSession(const char *peerAddr, SessionInfo& externalInfo);

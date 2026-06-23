@@ -101,10 +101,8 @@ BgpRouter::~BgpRouter(void)
     for (auto& elem : _BGPSessions)
         delete (elem).second;
 
-    for (auto& elem : bgpIpv6RoutingTable) {
-        removeInstalledIpv6Route(elem);
+    for (auto& elem : bgpIpv6RoutingTable)
         delete elem;
-    }
 
     for (auto& elem : _prefixListINOUT)
         delete elem;
@@ -880,6 +878,12 @@ void BgpRouter::removeInstalledIpv6Route(BgpIpv6RoutingTableEntry *entry)
     routingTable->removeRoute(entry);
     EV_INFO << "Removed MP-BGP IPv6 route from IPv6 routing table: "
             << entry->getDestination() << "/" << entry->getPrefixLength() << "\n";
+}
+
+void BgpRouter::removeInstalledIpv6Routes()
+{
+    for (auto route : bgpIpv6RoutingTable)
+        removeInstalledIpv6Route(route);
 }
 
 void BgpRouter::sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
