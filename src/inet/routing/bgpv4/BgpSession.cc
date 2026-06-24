@@ -263,6 +263,32 @@ void BgpSession::sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& conte
     _updateMsgSent++;
 }
 
+void BgpSession::sendWithdrawMessage(const BgpUpdateWithdrawnRoutes& withdrawnRoute)
+{
+    const auto& updateMsg = makeShared<BgpUpdateMessage>();
+
+    updateMsg->setWithdrawnRoutesArraySize(1);
+    updateMsg->setWithdrawnRoutes(0, withdrawnRoute);
+    updateMsg->setWithDrawnRoutesLength(1 + (withdrawnRoute.length + 7) / 8);
+    updateMsg->addChunkLength(B(updateMsg->getWithDrawnRoutesLength()));
+
+    updateMsg->setTotalPathAttributeLength(0);
+    updateMsg->setPathAttributesArraySize(0);
+    updateMsg->setNLRIArraySize(0);
+    updateMsg->setTotalLength(updateMsg->getChunkLength().get<B>());
+
+    EV_INFO << "Sending BGP Update message to " << _info.peerAddr.str(false)
+            << " on interface " << _info.linkIntf->getInterfaceName()
+            << "[" << _info.linkIntf->getInterfaceId() << "] with contents:\n";
+    bgpRouter.printUpdateMessage(*updateMsg);
+
+    Packet *pk = new Packet("BgpUpdate");
+    pk->insertAtFront(updateMsg);
+
+    _info.socket->send(pk);
+    _updateMsgSent++;
+}
+
 void BgpSession::sendNotificationMessage()
 {
     // TODO

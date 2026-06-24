@@ -785,6 +785,25 @@ void BgpRouter::processMessage(const BgpUpdateMessage& msg)
         }
     }
 
+    for (size_t i = 0; i < msg.getWithdrawnRoutesArraySize(); i++) {
+        const BgpUpdateWithdrawnRoutes& withdrawn = msg.getWithdrawnRoutes(i);
+        bool removed = false;
+        for (auto entry : bgpRoutingTable) {
+            if (entry->getLearnedSessionId() == _currSessionId &&
+                withdrawn.length == entry->getNetmask().getNetmaskLength() &&
+                Ipv4Address::maskedAddrAreEqual(withdrawn.prefix, entry->getDestination(), entry->getNetmask()))
+            {
+                withdrawIpv4Route(entry, _currSessionId, true);
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) {
+            EV_INFO << "Ignoring withdrawal for unknown IPv4 route "
+                    << withdrawn.prefix << "/" << (int)withdrawn.length << "\n";
+        }
+    }
+
     if (msg.getNLRIArraySize() == 0)
         return;
 
@@ -1008,6 +1027,36 @@ void BgpRouter::removeInstalledIpv6Routes()
 
 void BgpRouter::removeRoutesLearnedFromSession(SessionId sessionId)
 {
+    for (auto routeIt = bgpRoutingTable.begin(); routeIt != bgpRoutingTable.end(); ) {
+        BgpRoutingTableEntry *entry = *routeIt;
+        if (entry->getLearnedSessionId() != sessionId) {
+            routeIt++;
+            continue;
+        }
+
+        EV_INFO << "Removing BGP IPv4 route learned from failed session "
+                << sessionId << ": " << entry->getDestination()
+                << "/" << entry->getNetmask().getNetmaskLength() << "\n";
+
+        sendWithdrawNlri(entry, sessionId, true);
+        routeIt = bgpRoutingTable.erase(routeIt);
+        if (entry->getRoutingTable())
+            rt->deleteRoute(entry);
+        else
+            delete entry;
+    }
+
+    for (int i = rt->getNumRoutes() - 1; i >= 0; i--) {
+        auto entry = dynamic_cast<BgpRoutingTableEntry *>(rt->getRoute(i));
+        if (entry && entry->getLearnedSessionId() == sessionId) {
+            EV_INFO << "Removing installed BGP IPv4 route learned from failed session "
+                    << sessionId << ": " << entry->getDestination()
+                    << "/" << entry->getNetmask().getNetmaskLength() << "\n";
+            sendWithdrawNlri(entry, sessionId, true);
+            rt->deleteRoute(entry);
+        }
+    }
+
     for (auto routeIt = bgpIpv6RoutingTable.begin(); routeIt != bgpIpv6RoutingTable.end(); ) {
         BgpIpv6RoutingTableEntry *entry = *routeIt;
         if (entry->getLearnedSessionId() != sessionId) {
@@ -1024,6 +1073,46 @@ void BgpRouter::removeRoutesLearnedFromSession(SessionId sessionId)
         routeIt = bgpIpv6RoutingTable.erase(routeIt);
         delete entry;
     }
+}
+
+void BgpRouter::sendWithdrawNlri(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
+{
+    for (auto& elem : _BGPSessions) {
+        BgpSession *targetSession = elem.second;
+        if (!targetSession->isEstablished())
+            continue;
+
+        if (fromPeer && elem.first == sourceSessionIndex)
+            continue;
+
+        if (fromPeer && entry->isIBgpLearned() && targetSession->getType() == IGP) {
+            EV_INFO << "BGP Split Horizon: prevent withdrawal propagation of network "
+                    << entry->getDestination() << "\\" << entry->getNetmask();
+            continue;
+        }
+
+        BgpUpdateWithdrawnRoutes withdrawnRoute;
+        withdrawnRoute.length = entry->getNetmask().getNetmaskLength();
+        withdrawnRoute.prefix = entry->getDestination().doAnd(entry->getNetmask());
+        targetSession->sendWithdrawMessage(withdrawnRoute);
+    }
+}
+
+void BgpRouter::withdrawIpv4Route(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
+{
+    auto routeIt = std::find(bgpRoutingTable.begin(), bgpRoutingTable.end(), entry);
+    if (routeIt == bgpRoutingTable.end())
+        return;
+
+    EV_INFO << "Withdrawing BGP IPv4 route " << entry->getDestination()
+            << "/" << entry->getNetmask().getNetmaskLength() << "\n";
+
+    sendWithdrawNlri(entry, sourceSessionIndex, fromPeer);
+    bgpRoutingTable.erase(routeIt);
+    if (entry->getRoutingTable())
+        rt->deleteRoute(entry);
+    else
+        delete entry;
 }
 
 void BgpRouter::sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
@@ -1173,6 +1262,7 @@ BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpRout
         entry->setAdminDist(Ipv4Route::dBGPExternal);
     else
         entry->setAdminDist(Ipv4Route::dUnknown);
+    entry->setLearnedSessionId(sessionIndex);
 
     // if the route already exists in BGP routing table, tieBreakingProcess();
     // (RFC 4271: 9.1.2.2 Breaking Ties)
@@ -1204,6 +1294,7 @@ BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpRout
                 BGPEntry->setAdminDist(Ipv4Route::dBGPInternal);
                 BGPEntry->setIBgpLearned(true);
                 BGPEntry->setLocalPreference(entry->getLocalPreference());
+                BGPEntry->setLearnedSessionId(sessionIndex);
                 rt->addRoute(BGPEntry);
                 // Note: No need to delete the existing route. Let the administrative distance decides.
 //                rt->deleteRoute(oldEntry);

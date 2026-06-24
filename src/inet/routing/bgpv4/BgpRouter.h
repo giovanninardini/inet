@@ -189,6 +189,9 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     bool tieBreakingProcess(BgpRoutingTableEntry *oldEntry, BgpRoutingTableEntry *entry);
     bool tieBreakingProcess(BgpIpv6RoutingTableEntry *oldEntry, BgpIpv6RoutingTableEntry *entry);
 
+    void withdrawIpv4Route(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
+    void sendWithdrawNlri(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
+
     bool isInASList(std::vector<AsId> ASList, BgpRoutingTableEntry *entry);
     bool isInASList(std::vector<AsId> ASList, BgpIpv6RoutingTableEntry *entry);
     unsigned long isInTable(std::vector<BgpRoutingTableEntry *> rtTable, BgpRoutingTableEntry *entry);
@@ -219,6 +222,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void withdrawIpv6Route(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
     void sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
     BgpIpv6RoutingTableEntry *findIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId) const;
+
     int isInRoutingTable(IIpv4RoutingTable *rtTable, Ipv4Address addr);
     SessionId findIdFromPeerAddr(std::map<SessionId, BgpSession *> sessions, Ipv4Address peerAddr);
     SessionId findIdFromSocketConnId(std::map<SessionId, BgpSession *> sessions, int connId);

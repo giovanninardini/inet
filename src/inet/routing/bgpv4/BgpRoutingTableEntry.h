@@ -27,6 +27,7 @@ class INET_API BgpRoutingTableEntry : public Ipv4Route
     std::vector<AsId> _ASList;
     int localPreference = 0;
     bool IBGP_learned = false;
+    SessionId learnedSessionId = 0;
 
   public:
     BgpRoutingTableEntry(void);
@@ -43,6 +44,8 @@ class INET_API BgpRoutingTableEntry : public Ipv4Route
     void setLocalPreference(int l) { localPreference = l; }
     bool isIBgpLearned(void) { return IBGP_learned; }
     void setIBgpLearned(bool i) { IBGP_learned = i; }
+    SessionId getLearnedSessionId() const { return learnedSessionId; }
+    void setLearnedSessionId(SessionId sessionId) { learnedSessionId = sessionId; }
     virtual std::string str() const;
 };
 

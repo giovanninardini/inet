@@ -78,6 +78,7 @@ public:
     void sendOpenMessage();
     void sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& content, BgpUpdateNlri& NLRI);
     void sendUpdateMessage(std::vector<BgpUpdatePathAttributes *>& content);
+    void sendWithdrawMessage(const BgpUpdateWithdrawnRoutes& withdrawnRoute);
     void sendNotificationMessage();
     void sendKeepAliveMessage();
 
