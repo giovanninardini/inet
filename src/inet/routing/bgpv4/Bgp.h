@@ -40,7 +40,6 @@ class INET_API Bgp : public RoutingProtocolBase, protected cListener
     virtual void handleCrashOperation(LifecycleOperation *operation) override;
     void startBgp();
     void stopBgp(bool abort);
-    void removeBgpRoutes();
     void createBgpRouter();
     void handleTimer(cMessage *timer);
     virtual void finish() override;

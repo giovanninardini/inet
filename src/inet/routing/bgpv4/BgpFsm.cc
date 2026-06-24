@@ -460,6 +460,7 @@ void Established::HoldTimer_Expires()
     EV_TRACE << "Processing Established::HoldTimer_Expires" << std::endl;
     BgpSession& session = TopState::box().getModule();
     // If the HoldTimer_Expires event occurs (Event 10), the local system:
+    session.removeRoutesLearnedFromSession();
     // - sets the ConnectRetryTimer to zero,
     session.restartsConnectRetryTimer(false);
     // - releases all BGP resources,
@@ -491,6 +492,7 @@ void Established::TcpConnectionFails()
 {
     EV_TRACE << "Processing Established::TcpConnectionFails" << std::endl;
     BgpSession& session = TopState::box().getModule();
+    session.removeRoutesLearnedFromSession();
     session.restartsConnectRetryTimer(false);
     session._info.socket->abort();
     ++session._connectRetryCounter;

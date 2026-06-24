@@ -1,0 +1,4 @@
+<config>
+  <interface hosts='A' names='ppp0' address='10.10.10.1' netmask='255.255.255.0' groups='224.0.0.1 224.0.0.2 224.0.0.5'/>
+  <interface hosts='B' names='ppp0' address='10.10.10.2' netmask='255.255.255.0' groups='224.0.0.1 224.0.0.2 224.0.0.5'/>
+</config>

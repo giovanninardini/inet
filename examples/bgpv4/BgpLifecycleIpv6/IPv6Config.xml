@@ -1,0 +1,14 @@
+<config>
+  <interface hosts='A' names='ppp0' address='2001:db8:12::1'/>
+  <interface hosts='A' names='eth0' address='2001:db8:1::1'/>
+  <interface hosts='B' names='ppp0' address='2001:db8:12::2'/>
+  <interface hosts='B' names='eth0' address='2001:db8:2::1'/>
+  <interface hosts='H1' names='eth0' address='2001:db8:1::11'/>
+  <interface hosts='H2' names='eth0' address='2001:db8:2::11'/>
+
+  <route hosts='H1' destination='::/0' gateway='2001:db8:1::1' interface='eth0'/>
+  <route hosts='H2' destination='::/0' gateway='2001:db8:2::1' interface='eth0'/>
+
+  <route hosts='A H1' destination='2001:db8:1::/64' interface='eth0'/>
+  <route hosts='B H2' destination='2001:db8:2::/64' interface='eth0'/>
+</config>

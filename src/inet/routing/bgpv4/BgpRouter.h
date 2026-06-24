@@ -35,6 +35,8 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     bool redistributeInternal = false;
     bool redistributeRip = false;
     bool redistributeOspf = false;
+    bool shuttingDown = false;
+    bool aborting = false;
     struct redistributeOspfType_t {
         bool interArea;
         bool intraArea;
@@ -92,7 +94,9 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void addWatches();
     void recordStatistics();
     void closeSessions(bool abort);
+    void removeBgpRoutes(bool abort);
     void removeInstalledIpv6Routes();
+    void removeRoutesLearnedFromSession(SessionId sessionId);
     void processIpv6WithdrawTimer(cMessage *timer);
 
     SessionId createEbgpSession(const char *peerAddr, SessionInfo& externalInfo);

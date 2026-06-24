@@ -7,6 +7,7 @@
 #include "inet/routing/bgpv4/BgpRouter.h"
 
 #include <algorithm>
+#include <set>
 
 #include "inet/common/ModuleAccess.h"
 #include "inet/networklayer/ipv6/Ipv6InterfaceData.h"
@@ -64,6 +65,12 @@ static Ipv6Address getGlobalIpv6Address(NetworkInterface *interfaceEntry)
     return address;
 }
 
+static Ipv6Address findGlobalIpv6Address(NetworkInterface *interfaceEntry)
+{
+    const auto *ipv6Data = interfaceEntry->getProtocolData<Ipv6InterfaceData>();
+    return ipv6Data->getGlblAddress();
+}
+
 static std::vector<BgpAddressFamily> getMultiprotocolCapabilities(const BgpOpenMessage& msg)
 {
     std::vector<BgpAddressFamily> families;
@@ -104,6 +111,8 @@ BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4Routin
 
 BgpRouter::~BgpRouter(void)
 {
+    removeInstalledIpv6Routes();
+
     for (auto& elem : ipv6WithdrawRoutes)
         bgpModule->cancelAndDelete(elem.first);
     ipv6WithdrawRoutes.clear();
@@ -111,8 +120,15 @@ BgpRouter::~BgpRouter(void)
     for (auto& elem : _BGPSessions)
         delete (elem).second;
 
-    for (auto& elem : bgpIpv6RoutingTable)
-        delete elem;
+    // During crash teardown, other protocol modules may already be unwinding
+    // route state; graceful shutdown and normal destruction still delete these.
+    if (!aborting) {
+        std::set<BgpIpv6RoutingTableEntry *> deletedIpv6Routes;
+        for (auto route : bgpIpv6RoutingTable) {
+            if (deletedIpv6Routes.insert(route).second)
+                delete route;
+        }
+    }
 
     for (auto& elem : _prefixListINOUT)
         delete elem;
@@ -176,11 +192,14 @@ void BgpRouter::recordStatistics()
 // listening socket on an already-bound port, crashing non-lifecycle scenarios.
 bool BgpRouter::isLifecycleNode() const
 {
-    return getContainingNode(bgpModule)->getSubmodule("status") != nullptr;
+    return !shuttingDown && getContainingNode(bgpModule)->getSubmodule("status") != nullptr;
 }
 
 void BgpRouter::closeSessions(bool abort)
 {
+    shuttingDown = true;
+    aborting = abort;
+
     for (auto& elem : _BGPSessions) {
         TcpSocket *socket = elem.second->getSocket();
         if (socket) {
@@ -199,6 +218,55 @@ void BgpRouter::closeSessions(bool abort)
                 socketListen->close();
         }
     }
+}
+
+void BgpRouter::removeBgpRoutes(bool abort)
+{
+    shuttingDown = true;
+    aborting = abort;
+
+    std::set<BgpRoutingTableEntry *> installedIpv4Routes;
+    for (int i = rt->getNumRoutes() - 1; i >= 0; i--) {
+        Ipv4Route *route = rt->getRoute(i);
+        if (route->getSourceType() == IRoute::BGP) {
+            EV_INFO << "Removing BGP route " << route->str() << endl;
+            if (auto bgpRoute = dynamic_cast<BgpRoutingTableEntry *>(route))
+                installedIpv4Routes.insert(bgpRoute);
+            rt->deleteRoute(route);
+        }
+    }
+
+    // During crash teardown, other protocol modules may already be unwinding
+    // route state. Installed routes are removed above; uninstalled Loc-RIB
+    // entries are deleted only for graceful shutdown and normal destruction.
+    if (!aborting) {
+        std::set<BgpRoutingTableEntry *> deletedIpv4Routes;
+        for (auto route : bgpRoutingTable) {
+            if (installedIpv4Routes.find(route) == installedIpv4Routes.end() &&
+                deletedIpv4Routes.insert(route).second)
+            {
+                delete route;
+            }
+        }
+    }
+    bgpRoutingTable.clear();
+
+    for (auto& elem : ipv6WithdrawRoutes)
+        bgpModule->cancelAndDelete(elem.first);
+    ipv6WithdrawRoutes.clear();
+
+    removeInstalledIpv6Routes();
+
+    // During crash teardown, other protocol modules may already be unwinding
+    // route state; graceful shutdown and normal destruction still delete these.
+    if (!aborting) {
+        std::set<BgpIpv6RoutingTableEntry *> deletedIpv6Routes;
+        for (auto route : bgpIpv6RoutingTable) {
+            if (deletedIpv6Routes.insert(route).second)
+                delete route;
+        }
+    }
+    bgpIpv6RoutingTable.clear();
 }
 
 SessionId BgpRouter::createIbgpSession(const char *peerAddr)
@@ -938,6 +1006,26 @@ void BgpRouter::removeInstalledIpv6Routes()
         removeInstalledIpv6Route(route);
 }
 
+void BgpRouter::removeRoutesLearnedFromSession(SessionId sessionId)
+{
+    for (auto routeIt = bgpIpv6RoutingTable.begin(); routeIt != bgpIpv6RoutingTable.end(); ) {
+        BgpIpv6RoutingTableEntry *entry = *routeIt;
+        if (entry->getLearnedSessionId() != sessionId) {
+            routeIt++;
+            continue;
+        }
+
+        EV_INFO << "Removing MP-BGP IPv6 route learned from failed session "
+                << sessionId << ": " << entry->getDestination()
+                << "/" << entry->getPrefixLength() << "\n";
+
+        sendMpUnreachNlri(entry, sessionId, true);
+        removeInstalledIpv6Route(entry);
+        routeIt = bgpIpv6RoutingTable.erase(routeIt);
+        delete entry;
+    }
+}
+
 void BgpRouter::sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer)
 {
     BgpAddressFamily ipv6Unicast = makeAddressFamily(AFI_IPV6, SAFI_UNICAST);
@@ -1371,8 +1459,14 @@ void BgpRouter::updateSendProcess(BgpProcessResult type, SessionId sessionIndex,
         mpReach->setAfi(AFI_IPV6);
         mpReach->setSafi(SAFI_UNICAST);
         mpReach->setNextHopNetworkAddressLength(16);
-        if (sourceSessionType == EGP || targetSession->getNextHopSelf())
-            mpReach->setNextHopIpv6Address(getGlobalIpv6Address(targetSession->getLinkIntf()));
+        if (sourceSessionType == EGP || targetSession->getNextHopSelf()) {
+            Ipv6Address nextHop = findGlobalIpv6Address(targetSession->getLinkIntf());
+            if (nextHop.isUnspecified() && entry->getLearnedSessionId() == 0 && !entry->getNextHop().isUnspecified())
+                nextHop = entry->getNextHop();
+            if (nextHop.isUnspecified())
+                nextHop = getGlobalIpv6Address(targetSession->getLinkIntf());
+            mpReach->setNextHopIpv6Address(nextHop);
+        }
         else
             mpReach->setNextHopIpv6Address(entry->getNextHop());
         mpReach->setNumberOfSnpas(0);

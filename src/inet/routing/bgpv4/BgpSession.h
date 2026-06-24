@@ -84,6 +84,7 @@ public:
     void listenConnectionFromPeer() { bgpRouter.listenConnectionFromPeer(_info.sessionID); }
     void openTCPConnectionToPeer() { bgpRouter.openTCPConnectionToPeer(_info.sessionID); }
     SessionId findAndStartNextSession(BgpSessionType type) { return bgpRouter.findNextSession(type, true); }
+    void removeRoutesLearnedFromSession() const { bgpRouter.removeRoutesLearnedFromSession(_info.sessionID); }
 
     // setters for creating and editing the information in the Bgp session:
     void setInfo(SessionInfo info);
