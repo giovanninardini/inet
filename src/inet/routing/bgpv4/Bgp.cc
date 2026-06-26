@@ -98,7 +98,6 @@ void Bgp::stopBgp(bool abort)
 {
     cancelEvent(startupTimer);
     if (bgpRouter) {
-        bgpRouter->notifyPeersOfLocalSessionFailure();
         bgpRouter->removeBgpRoutes(abort);
         bgpRouter->closeSessions(abort);
     }

@@ -16,12 +16,6 @@
 namespace inet {
 namespace bgp {
 
-// Simulation-local registry used only for lifecycle cleanup. When a BGP module
-// crashes, INET may tear down TCP and interfaces before the remote BGP peers get
-// a socket failure indication, so peers are notified directly to apply the same
-// implicit route withdrawal that a failed BGP session would cause.
-static std::vector<BgpRouter *> bgpRouters;
-
 static bool containsAddressFamily(const std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
 {
     return std::find(families.begin(), families.end(), family) != families.end();
@@ -214,15 +208,10 @@ BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4Routin
     this->rt6 = rt6;
 
     ospfModule = findModuleFromPar<ospfv2::Ospfv2>(bgpModule->par("ospfRoutingModule"), bgpModule);
-    bgpRouters.push_back(this);
 }
 
 BgpRouter::~BgpRouter(void)
 {
-    auto routerIt = std::find(bgpRouters.begin(), bgpRouters.end(), this);
-    if (routerIt != bgpRouters.end())
-        bgpRouters.erase(routerIt);
-
     if (!aborting)
         removeInstalledIpv6Routes();
 
@@ -233,15 +222,11 @@ BgpRouter::~BgpRouter(void)
     for (auto& elem : _BGPSessions)
         delete (elem).second;
 
-    // During crash teardown, other protocol modules may already be unwinding
-    // route state; graceful shutdown and normal destruction still delete these.
-    if (!aborting) {
-        std::set<BgpIpv6RoutingTableEntry *> deletedIpv6Routes;
-        for (auto route : bgpIpv6RoutingTable) {
-            if (deletedIpv6Routes.insert(route).second)
-                delete route;
-        }
-    }
+    // Loc-RIB routes may also be referenced by the IPv6 routing table during
+    // module teardown. Normal lifecycle stop removes them through
+    // removeBgpRoutes(); the destructor only detaches what is still installed.
+    bgpRoutingTable.clear();
+    bgpIpv6RoutingTable.clear();
 
     for (auto route : adjRibIn)
         delete route;
@@ -341,35 +326,6 @@ void BgpRouter::closeSessions(bool abort)
     }
 }
 
-void BgpRouter::notifyPeersOfLocalSessionFailure()
-{
-    if (!containsAddressFamily(addressFamilies, makeAddressFamily(AFI_IPV6, SAFI_UNICAST)))
-        return;
-
-    std::set<Ipv4Address> localAddresses;
-    for (auto address : localBgpAddresses)
-        localAddresses.insert(address);
-
-    EV_INFO << "Notifying BGP peers about local session failure for "
-            << localAddresses.size() << " local IPv4 addresses\n";
-
-    // Lifecycle stop/crash may tear down TCP before the remote BGP module gets
-    // a socket failure indication. Notify peers in the same simulation so they
-    // perform the normal implicit-withdrawal cleanup for this session.
-    for (auto router : bgpRouters) {
-        if (router == this)
-            continue;
-
-        for (const auto& session : router->_BGPSessions) {
-            if (localAddresses.find(session.second->getPeerAddr()) != localAddresses.end()) {
-                EV_INFO << "Notifying peer router to remove BGP routes learned from session "
-                        << session.first << " to " << session.second->getPeerAddr().str(false) << "\n";
-                router->removeRoutesLearnedFromSession(session.first);
-            }
-        }
-    }
-}
-
 void BgpRouter::removeBgpRoutes(bool abort)
 {
     shuttingDown = true;
@@ -446,8 +402,6 @@ SessionId BgpRouter::createIbgpSession(const char *peerAddr)
     info.sessionID = info.peerAddr.getInt() + info.routerID.getInt();
 
     numIgpSessions++;
-    if (std::find(localBgpAddresses.begin(), localBgpAddresses.end(), internalAddress) == localBgpAddresses.end())
-        localBgpAddresses.push_back(internalAddress);
 
     SessionId newSessionId;
     newSessionId = info.sessionID;
@@ -483,8 +437,6 @@ SessionId BgpRouter::createEbgpSession(const char *peerAddr, SessionInfo& extern
     ASSERT(info.linkIntf);
     info.sessionID = info.peerAddr.getInt() + info.linkIntf->getProtocolData<Ipv4InterfaceData>()->getIPAddress().getInt();
     numEgpSessions++;
-    if (std::find(localBgpAddresses.begin(), localBgpAddresses.end(), info.myAddr) == localBgpAddresses.end())
-        localBgpAddresses.push_back(info.myAddr);
 
     SessionId newSessionId;
     newSessionId = info.sessionID;

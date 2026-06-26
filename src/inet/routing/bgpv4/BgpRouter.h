@@ -47,9 +47,6 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     SocketMap _socketMap;
     SessionId _currSessionId = 0;
     std::map<SessionId, BgpSession *> _BGPSessions;
-    // Configured local BGP IPv4 endpoint addresses; kept separately so
-    // lifecycle crash cleanup can still identify peers after interfaces go down.
-    std::vector<Ipv4Address> localBgpAddresses;
     uint32_t numEgpSessions = 0;
     uint32_t numIgpSessions = 0;
     Ipv4Address internalAddress = Ipv4Address::UNSPECIFIED_ADDRESS;
@@ -99,7 +96,6 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void addWatches();
     void recordStatistics();
     void closeSessions(bool abort);
-    void notifyPeersOfLocalSessionFailure();
     void removeBgpRoutes(bool abort);
     void removeInstalledIpv6Routes();
     void removeRoutesLearnedFromSession(SessionId sessionId);
