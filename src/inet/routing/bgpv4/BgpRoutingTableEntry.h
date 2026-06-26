@@ -42,7 +42,7 @@ class INET_API BgpRoutingTableEntry : public Ipv4Route
     AsId getAS(unsigned int index) const { return _ASList[index]; }
     int getLocalPreference(void) const { return localPreference; }
     void setLocalPreference(int l) { localPreference = l; }
-    bool isIBgpLearned(void) { return IBGP_learned; }
+    bool isIBgpLearned(void) const { return IBGP_learned; }
     void setIBgpLearned(bool i) { IBGP_learned = i; }
     SessionId getLearnedSessionId() const { return learnedSessionId; }
     void setLearnedSessionId(SessionId sessionId) { learnedSessionId = sessionId; }

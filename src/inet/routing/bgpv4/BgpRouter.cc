@@ -16,6 +16,12 @@
 namespace inet {
 namespace bgp {
 
+// Simulation-local registry used only for lifecycle cleanup. When a BGP module
+// crashes, INET may tear down TCP and interfaces before the remote BGP peers get
+// a socket failure indication, so peers are notified directly to apply the same
+// implicit route withdrawal that a failed BGP session would cause.
+static std::vector<BgpRouter *> bgpRouters;
+
 static bool containsAddressFamily(const std::vector<BgpAddressFamily>& families, const BgpAddressFamily& family)
 {
     return std::find(families.begin(), families.end(), family) != families.end();
@@ -99,6 +105,107 @@ static std::vector<BgpAddressFamily> getMultiprotocolCapabilities(const BgpOpenM
     return families;
 }
 
+static bool ipv4PrefixesEqual(const Ipv4Address& prefix1, const Ipv4Address& netmask1, const Ipv4Address& prefix2, const Ipv4Address& netmask2)
+{
+    return netmask1 == netmask2 && Ipv4Address::maskedAddrAreEqual(prefix1, prefix2, netmask1);
+}
+
+static BgpRoutingTableEntry *cloneRoute(const BgpRoutingTableEntry *route)
+{
+    auto copy = new BgpRoutingTableEntry();
+    copy->setDestination(route->getDestination());
+    copy->setNetmask(route->getNetmask());
+    copy->setGateway(route->getGateway());
+    copy->setInterface(route->getInterface());
+    copy->setMetric(route->getMetric());
+    copy->setAdminDist(route->getAdminDist());
+    copy->setPathType(route->getPathType());
+    copy->setLocalPreference(route->getLocalPreference());
+    copy->setIBgpLearned(route->isIBgpLearned());
+    copy->setLearnedSessionId(route->getLearnedSessionId());
+    for (unsigned int i = 0; i < route->getASCount(); i++)
+        copy->addAS(route->getAS(i));
+    return copy;
+}
+
+static BgpIpv6RoutingTableEntry *cloneRoute(const BgpIpv6RoutingTableEntry *route)
+{
+    auto copy = new BgpIpv6RoutingTableEntry(route->getDestination(), route->getPrefixLength());
+    copy->setNextHop(route->getNextHop());
+    copy->setInterface(route->getInterface());
+    copy->setMetric(route->getMetric());
+    copy->setAdminDist(route->getAdminDist());
+    copy->setPathType(route->getPathType());
+    copy->setLocalPreference(route->getLocalPreference());
+    copy->setIBgpLearned(route->isIBgpLearned());
+    copy->setLearnedSessionId(route->getLearnedSessionId());
+    for (unsigned int i = 0; i < route->getASCount(); i++)
+        copy->addAS(route->getAS(i));
+    return copy;
+}
+
+template<typename Route>
+static bool routeIsBetter(const Route *candidate, const Route *current)
+{
+    if (candidate->getLocalPreference() > current->getLocalPreference())
+        return true;
+
+    if (candidate->getLocalPreference() < current->getLocalPreference())
+        return false;
+
+    if (candidate->getASCount() < current->getASCount())
+        return true;
+
+    if (candidate->getASCount() > current->getASCount())
+        return false;
+
+    return candidate->getPathType() < current->getPathType();
+}
+
+static bool sameAsPath(const BgpRoutingTableEntry *route1, const BgpRoutingTableEntry *route2)
+{
+    if (route1->getASCount() != route2->getASCount())
+        return false;
+
+    for (unsigned int i = 0; i < route1->getASCount(); i++) {
+        if (route1->getAS(i) != route2->getAS(i))
+            return false;
+    }
+    return true;
+}
+
+static bool sameAsPath(const BgpIpv6RoutingTableEntry *route1, const BgpIpv6RoutingTableEntry *route2)
+{
+    if (route1->getASCount() != route2->getASCount())
+        return false;
+
+    for (unsigned int i = 0; i < route1->getASCount(); i++) {
+        if (route1->getAS(i) != route2->getAS(i))
+            return false;
+    }
+    return true;
+}
+
+static bool sameRouteAttributes(const BgpRoutingTableEntry *route1, const BgpRoutingTableEntry *route2)
+{
+    return route1->getLearnedSessionId() == route2->getLearnedSessionId() &&
+           route1->getGateway() == route2->getGateway() &&
+           route1->getPathType() == route2->getPathType() &&
+           route1->getLocalPreference() == route2->getLocalPreference() &&
+           route1->isIBgpLearned() == route2->isIBgpLearned() &&
+           sameAsPath(route1, route2);
+}
+
+static bool sameRouteAttributes(const BgpIpv6RoutingTableEntry *route1, const BgpIpv6RoutingTableEntry *route2)
+{
+    return route1->getLearnedSessionId() == route2->getLearnedSessionId() &&
+           route1->getNextHop() == route2->getNextHop() &&
+           route1->getPathType() == route2->getPathType() &&
+           route1->getLocalPreference() == route2->getLocalPreference() &&
+           route1->isIBgpLearned() == route2->isIBgpLearned() &&
+           sameAsPath(route1, route2);
+}
+
 BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4RoutingTable *rt, Ipv6RoutingTable *rt6)
 {
     this->bgpModule = bgpModule;
@@ -107,11 +214,17 @@ BgpRouter::BgpRouter(cSimpleModule *bgpModule, IInterfaceTable *ift, IIpv4Routin
     this->rt6 = rt6;
 
     ospfModule = findModuleFromPar<ospfv2::Ospfv2>(bgpModule->par("ospfRoutingModule"), bgpModule);
+    bgpRouters.push_back(this);
 }
 
 BgpRouter::~BgpRouter(void)
 {
-    removeInstalledIpv6Routes();
+    auto routerIt = std::find(bgpRouters.begin(), bgpRouters.end(), this);
+    if (routerIt != bgpRouters.end())
+        bgpRouters.erase(routerIt);
+
+    if (!aborting)
+        removeInstalledIpv6Routes();
 
     for (auto& elem : ipv6WithdrawRoutes)
         bgpModule->cancelAndDelete(elem.first);
@@ -129,6 +242,12 @@ BgpRouter::~BgpRouter(void)
                 delete route;
         }
     }
+
+    for (auto route : adjRibIn)
+        delete route;
+
+    for (auto route : adjRibInIpv6)
+        delete route;
 
     for (auto& elem : _prefixListINOUT)
         delete elem;
@@ -164,6 +283,8 @@ void BgpRouter::addWatches()
     WATCH(_BGPSessions);
     WATCH(bgpRoutingTable);
     WATCH(bgpIpv6RoutingTable);
+    WATCH(adjRibIn);
+    WATCH(adjRibInIpv6);
     _socketMap.addWatch();
 }
 
@@ -220,6 +341,35 @@ void BgpRouter::closeSessions(bool abort)
     }
 }
 
+void BgpRouter::notifyPeersOfLocalSessionFailure()
+{
+    if (!containsAddressFamily(addressFamilies, makeAddressFamily(AFI_IPV6, SAFI_UNICAST)))
+        return;
+
+    std::set<Ipv4Address> localAddresses;
+    for (auto address : localBgpAddresses)
+        localAddresses.insert(address);
+
+    EV_INFO << "Notifying BGP peers about local session failure for "
+            << localAddresses.size() << " local IPv4 addresses\n";
+
+    // Lifecycle stop/crash may tear down TCP before the remote BGP module gets
+    // a socket failure indication. Notify peers in the same simulation so they
+    // perform the normal implicit-withdrawal cleanup for this session.
+    for (auto router : bgpRouters) {
+        if (router == this)
+            continue;
+
+        for (const auto& session : router->_BGPSessions) {
+            if (localAddresses.find(session.second->getPeerAddr()) != localAddresses.end()) {
+                EV_INFO << "Notifying peer router to remove BGP routes learned from session "
+                        << session.first << " to " << session.second->getPeerAddr().str(false) << "\n";
+                router->removeRoutesLearnedFromSession(session.first);
+            }
+        }
+    }
+}
+
 void BgpRouter::removeBgpRoutes(bool abort)
 {
     shuttingDown = true;
@@ -230,8 +380,11 @@ void BgpRouter::removeBgpRoutes(bool abort)
         Ipv4Route *route = rt->getRoute(i);
         if (route->getSourceType() == IRoute::BGP) {
             EV_INFO << "Removing BGP route " << route->str() << endl;
-            if (auto bgpRoute = dynamic_cast<BgpRoutingTableEntry *>(route))
+            if (auto bgpRoute = dynamic_cast<BgpRoutingTableEntry *>(route)) {
+                if (!aborting)
+                    sendWithdrawNlri(bgpRoute, bgpRoute->getLearnedSessionId(), bgpRoute->getLearnedSessionId() != 0);
                 installedIpv4Routes.insert(bgpRoute);
+            }
             rt->deleteRoute(route);
         }
     }
@@ -251,11 +404,21 @@ void BgpRouter::removeBgpRoutes(bool abort)
     }
     bgpRoutingTable.clear();
 
+    for (auto route : adjRibIn)
+        delete route;
+    adjRibIn.clear();
+
     for (auto& elem : ipv6WithdrawRoutes)
         bgpModule->cancelAndDelete(elem.first);
     ipv6WithdrawRoutes.clear();
 
-    removeInstalledIpv6Routes();
+    if (!aborting) {
+        for (auto route : bgpIpv6RoutingTable)
+            sendMpUnreachNlri(route, route->getLearnedSessionId(), route->getLearnedSessionId() != 0);
+    }
+
+    if (!aborting)
+        removeInstalledIpv6Routes();
 
     // During crash teardown, other protocol modules may already be unwinding
     // route state; graceful shutdown and normal destruction still delete these.
@@ -267,6 +430,10 @@ void BgpRouter::removeBgpRoutes(bool abort)
         }
     }
     bgpIpv6RoutingTable.clear();
+
+    for (auto route : adjRibInIpv6)
+        delete route;
+    adjRibInIpv6.clear();
 }
 
 SessionId BgpRouter::createIbgpSession(const char *peerAddr)
@@ -279,6 +446,8 @@ SessionId BgpRouter::createIbgpSession(const char *peerAddr)
     info.sessionID = info.peerAddr.getInt() + info.routerID.getInt();
 
     numIgpSessions++;
+    if (std::find(localBgpAddresses.begin(), localBgpAddresses.end(), internalAddress) == localBgpAddresses.end())
+        localBgpAddresses.push_back(internalAddress);
 
     SessionId newSessionId;
     newSessionId = info.sessionID;
@@ -314,6 +483,8 @@ SessionId BgpRouter::createEbgpSession(const char *peerAddr, SessionInfo& extern
     ASSERT(info.linkIntf);
     info.sessionID = info.peerAddr.getInt() + info.linkIntf->getProtocolData<Ipv4InterfaceData>()->getIPAddress().getInt();
     numEgpSessions++;
+    if (std::find(localBgpAddresses.begin(), localBgpAddresses.end(), info.myAddr) == localBgpAddresses.end())
+        localBgpAddresses.push_back(info.myAddr);
 
     SessionId newSessionId;
     newSessionId = info.sessionID;
@@ -787,20 +958,32 @@ void BgpRouter::processMessage(const BgpUpdateMessage& msg)
 
     for (size_t i = 0; i < msg.getWithdrawnRoutesArraySize(); i++) {
         const BgpUpdateWithdrawnRoutes& withdrawn = msg.getWithdrawnRoutes(i);
-        bool removed = false;
-        for (auto entry : bgpRoutingTable) {
-            if (entry->getLearnedSessionId() == _currSessionId &&
-                withdrawn.length == entry->getNetmask().getNetmaskLength() &&
-                Ipv4Address::maskedAddrAreEqual(withdrawn.prefix, entry->getDestination(), entry->getNetmask()))
-            {
-                withdrawIpv4Route(entry, _currSessionId, true);
-                removed = true;
-                break;
-            }
-        }
+        Ipv4Address netmask = Ipv4Address::makeNetmask(withdrawn.length);
+        auto removedRoute = removeAdjRibInIpv4Route(withdrawn.prefix, netmask, _currSessionId);
+        bool removed = removedRoute != nullptr;
+        delete removedRoute;
         if (!removed) {
             EV_INFO << "Ignoring withdrawal for unknown IPv4 route "
                     << withdrawn.prefix << "/" << (int)withdrawn.length << "\n";
+            continue;
+        }
+
+        EV_INFO << "Removed BGP IPv4 candidate from Adj-RIB-In after withdrawal: "
+                << withdrawn.prefix << "/" << (int)withdrawn.length << "\n";
+
+        BgpRoutingTableEntry *selectedRoute = nullptr;
+        BgpProcessResult result = recomputeIpv4Route(withdrawn.prefix, netmask, _currSessionId, true, selectedRoute);
+        if (result == RESULT0)
+            continue;
+
+        if (selectedRoute && selectedRoute->getLearnedSessionId() != 0)
+            updateSendProcess(result, selectedRoute->getLearnedSessionId(), selectedRoute);
+        else {
+            auto withdrawnEntry = new BgpRoutingTableEntry();
+            withdrawnEntry->setDestination(withdrawn.prefix);
+            withdrawnEntry->setNetmask(netmask);
+            sendWithdrawNlri(withdrawnEntry, _currSessionId, true);
+            delete withdrawnEntry;
         }
     }
 
@@ -876,10 +1059,221 @@ unsigned long BgpRouter::findIpv6TableIndex(const std::vector<BgpIpv6RoutingTabl
     return -1;
 }
 
+BgpRoutingTableEntry *BgpRouter::findIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId) const
+{
+    for (auto route : bgpRoutingTable) {
+        if (route->getLearnedSessionId() == learnedSessionId &&
+            ipv4PrefixesEqual(prefix, netmask, route->getDestination(), route->getNetmask()))
+        {
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+BgpRoutingTableEntry *BgpRouter::findAdjRibInIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId) const
+{
+    for (auto route : adjRibIn) {
+        if (route->getLearnedSessionId() == learnedSessionId &&
+            ipv4PrefixesEqual(prefix, netmask, route->getDestination(), route->getNetmask()))
+        {
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+BgpRoutingTableEntry *BgpRouter::removeAdjRibInIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId)
+{
+    for (auto routeIt = adjRibIn.begin(); routeIt != adjRibIn.end(); routeIt++) {
+        auto route = *routeIt;
+        if (route->getLearnedSessionId() == learnedSessionId &&
+            ipv4PrefixesEqual(prefix, netmask, route->getDestination(), route->getNetmask()))
+        {
+            adjRibIn.erase(routeIt);
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+BgpIpv6RoutingTableEntry *BgpRouter::findAdjRibInIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId) const
+{
+    for (auto route : adjRibInIpv6) {
+        if (route->getDestination() == prefix &&
+            route->getPrefixLength() == prefixLength &&
+            route->getLearnedSessionId() == learnedSessionId)
+        {
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+BgpIpv6RoutingTableEntry *BgpRouter::removeAdjRibInIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId)
+{
+    for (auto routeIt = adjRibInIpv6.begin(); routeIt != adjRibInIpv6.end(); routeIt++) {
+        auto route = *routeIt;
+        if (route->getDestination() == prefix &&
+            route->getPrefixLength() == prefixLength &&
+            route->getLearnedSessionId() == learnedSessionId)
+        {
+            adjRibInIpv6.erase(routeIt);
+            return route;
+        }
+    }
+    return nullptr;
+}
+
+BgpProcessResult BgpRouter::recomputeIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId sourceSessionIndex, bool fromPeer, BgpRoutingTableEntry *&selectedRoute)
+{
+    (void)sourceSessionIndex;
+    (void)fromPeer;
+
+    // Re-run the RFC 4271 best-path choice for one IPv4 prefix after a
+    // withdrawal or session loss. Adj-RIB-In contains peer candidates, while
+    // bgpRoutingTable contains the selected Loc-RIB route and local Network
+    // routes; only the selected route is installed into the IPv4 routing table.
+    selectedRoute = nullptr;
+    BgpRoutingTableEntry *oldSelectedRoute = nullptr;
+    BgpRoutingTableEntry *bestRoute = nullptr;
+
+    for (auto route : bgpRoutingTable) {
+        if (!ipv4PrefixesEqual(prefix, netmask, route->getDestination(), route->getNetmask()))
+            continue;
+
+        if (route->getLearnedSessionId() == 0) {
+            if (!bestRoute || routeIsBetter(route, bestRoute))
+                bestRoute = route;
+        }
+        else
+            oldSelectedRoute = route;
+    }
+
+    for (auto route : adjRibIn) {
+        if (ipv4PrefixesEqual(prefix, netmask, route->getDestination(), route->getNetmask()) &&
+            (!bestRoute || routeIsBetter(route, bestRoute)))
+        {
+            bestRoute = route;
+        }
+    }
+
+    if (oldSelectedRoute && bestRoute && sameRouteAttributes(oldSelectedRoute, bestRoute)) {
+        selectedRoute = oldSelectedRoute;
+        return RESULT0;
+    }
+
+    if (oldSelectedRoute) {
+        auto routeIt = std::find(bgpRoutingTable.begin(), bgpRoutingTable.end(), oldSelectedRoute);
+        ASSERT(routeIt != bgpRoutingTable.end());
+        bgpRoutingTable.erase(routeIt);
+        if (oldSelectedRoute->getRoutingTable())
+            rt->deleteRoute(oldSelectedRoute);
+        else
+            delete oldSelectedRoute;
+    }
+
+    if (!bestRoute) {
+        EV_INFO << "Adj-RIB-In recomputation found no IPv4 route for "
+                << prefix << "/" << netmask.getNetmaskLength() << "\n";
+        return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : RESULT0;
+    }
+
+    if (bestRoute->getLearnedSessionId() == 0) {
+        selectedRoute = bestRoute;
+        return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : RESULT0;
+    }
+
+    selectedRoute = cloneRoute(bestRoute);
+    selectedRoute->setInterface(_BGPSessions[selectedRoute->getLearnedSessionId()]->getLinkIntf());
+    bgpRoutingTable.push_back(selectedRoute);
+
+    if (isReachable(selectedRoute->getGateway()))
+        rt->addRoute(selectedRoute);
+    else
+        EV_INFO << "Keeping selected BGP IPv4 route " << selectedRoute->str()
+                << " in BGP state because its next hop is not reachable\n";
+
+    EV_INFO << "Adj-RIB-In selected BGP IPv4 route " << selectedRoute->str() << "\n";
+    return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : NEW_ROUTE_ADDED;
+}
+
+BgpProcessResult BgpRouter::recomputeIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId sourceSessionIndex, bool fromPeer, BgpIpv6RoutingTableEntry *&selectedRoute)
+{
+    (void)sourceSessionIndex;
+    (void)fromPeer;
+
+    // Same decision model as IPv4, applied to RFC 4760 IPv6-unicast NLRI:
+    // choose the best candidate from Adj-RIB-In plus local Network routes, then
+    // replace the selected Loc-RIB/Ipv6RoutingTable route only if the best path
+    // actually changed.
+    selectedRoute = nullptr;
+    BgpIpv6RoutingTableEntry *oldSelectedRoute = nullptr;
+    BgpIpv6RoutingTableEntry *bestRoute = nullptr;
+
+    for (auto route : bgpIpv6RoutingTable) {
+        if (route->getDestination() != prefix || route->getPrefixLength() != prefixLength)
+            continue;
+
+        if (route->getLearnedSessionId() == 0) {
+            if (!bestRoute || routeIsBetter(route, bestRoute))
+                bestRoute = route;
+        }
+        else
+            oldSelectedRoute = route;
+    }
+
+    for (auto route : adjRibInIpv6) {
+        if (route->getDestination() == prefix &&
+            route->getPrefixLength() == prefixLength &&
+            (!bestRoute || routeIsBetter(route, bestRoute)))
+        {
+            bestRoute = route;
+        }
+    }
+
+    if (oldSelectedRoute && bestRoute && sameRouteAttributes(oldSelectedRoute, bestRoute)) {
+        selectedRoute = oldSelectedRoute;
+        return RESULT0;
+    }
+
+    if (oldSelectedRoute) {
+        auto routeIt = std::find(bgpIpv6RoutingTable.begin(), bgpIpv6RoutingTable.end(), oldSelectedRoute);
+        ASSERT(routeIt != bgpIpv6RoutingTable.end());
+        removeInstalledIpv6Route(oldSelectedRoute);
+        bgpIpv6RoutingTable.erase(routeIt);
+        delete oldSelectedRoute;
+    }
+
+    if (!bestRoute) {
+        EV_INFO << "Adj-RIB-In recomputation found no MP-BGP IPv6 route for "
+                << prefix << "/" << prefixLength << "\n";
+        return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : RESULT0;
+    }
+
+    if (bestRoute->getLearnedSessionId() == 0) {
+        selectedRoute = bestRoute;
+        return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : RESULT0;
+    }
+
+    selectedRoute = cloneRoute(bestRoute);
+    bgpIpv6RoutingTable.push_back(selectedRoute);
+    installIpv6Route(selectedRoute, selectedRoute->getLearnedSessionId());
+
+    if (rt6)
+        rt6->purgeDestCache();
+
+    EV_INFO << "Adj-RIB-In selected MP-BGP IPv6 route " << selectedRoute->str() << "\n";
+    return oldSelectedRoute ? ROUTE_DESTINATION_CHANGED : NEW_ROUTE_ADDED;
+}
+
 BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpIpv6RoutingTableEntry *entry, SessionId sessionIndex)
 {
     (void)msg;
 
+    // MP_REACH_NLRI has already been normalized into an IPv6 BGP route entry.
+    // First apply the existing inbound filters, then store the candidate in
+    // Adj-RIB-In and run the decision process for this prefix.
     if (isInIpv6PrefixList(_prefixIpv6ListIN, entry) != (unsigned long)-1 || isInASList(_ASListIN, entry)) {
         delete entry;
         return RESULT0;
@@ -891,24 +1285,17 @@ BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpIpv6
 
     entry->setLearnedSessionId(sessionIndex);
 
-    unsigned long bgpIndex = findIpv6TableIndex(bgpIpv6RoutingTable, entry);
-    if (bgpIndex != (unsigned long)-1) {
-        BgpIpv6RoutingTableEntry *oldEntry = bgpIpv6RoutingTable[bgpIndex];
-        if (tieBreakingProcess(oldEntry, entry)) {
-            delete entry;
-            return RESULT0;
-        }
-        removeInstalledIpv6Route(oldEntry);
-        bgpIpv6RoutingTable.erase(bgpIpv6RoutingTable.begin() + bgpIndex);
-        delete oldEntry;
-    }
+    // One peer can advertise at most one active path for the same prefix here;
+    // replace that peer's old Adj-RIB-In candidate before recomputing Loc-RIB.
+    auto oldRoute = removeAdjRibInIpv6Route(entry->getDestination(), entry->getPrefixLength(), sessionIndex);
+    delete oldRoute;
 
-    bgpIpv6RoutingTable.push_back(entry);
-    installIpv6Route(entry, sessionIndex);
-
-    EV_INFO << "Accepted MP-BGP IPv6 route " << entry->str()
+    adjRibInIpv6.push_back(entry);
+    EV_INFO << "Stored MP-BGP IPv6 candidate in Adj-RIB-In: " << entry->str()
             << " from peer " << _BGPSessions[sessionIndex]->getPeerAddr().str(false) << "\n";
-    return NEW_ROUTE_ADDED;
+
+    BgpIpv6RoutingTableEntry *selectedRoute = nullptr;
+    return recomputeIpv6Route(entry->getDestination(), entry->getPrefixLength(), sessionIndex, true, selectedRoute);
 }
 
 void BgpRouter::processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdatePathAttributesMpReachNlri& mpReach, SessionId sessionIndex)
@@ -965,8 +1352,20 @@ void BgpRouter::processMpReachNlri(const BgpUpdateMessage& msg, const BgpUpdateP
         BgpProcessResult decisionProcessResult = asLoopDetection(entry, myAsId);
         if (decisionProcessResult == ASLOOP_NO_DETECTED) {
             decisionProcessResult = decisionProcess(msg, entry, sessionIndex);
-            if (decisionProcessResult == NEW_ROUTE_ADDED)
-                updateSendProcess(decisionProcessResult, sessionIndex, entry);
+            if (decisionProcessResult != RESULT0) {
+                BgpIpv6RoutingTableEntry *selectedRoute = nullptr;
+                for (auto route : bgpIpv6RoutingTable) {
+                    if (route->getDestination() == nlri.ipv6Prefix &&
+                        route->getPrefixLength() == nlri.length &&
+                        route->getLearnedSessionId() != 0)
+                    {
+                        selectedRoute = route;
+                        break;
+                    }
+                }
+                if (selectedRoute)
+                    updateSendProcess(decisionProcessResult, selectedRoute->getLearnedSessionId(), selectedRoute);
+            }
         }
         else
             delete entry;
@@ -1015,6 +1414,7 @@ void BgpRouter::removeInstalledIpv6Route(BgpIpv6RoutingTableEntry *entry)
         return;
 
     routingTable->removeRoute(entry);
+    routingTable->purgeDestCache();
     EV_INFO << "Removed MP-BGP IPv6 route from IPv6 routing table: "
             << entry->getDestination() << "/" << entry->getPrefixLength() << "\n";
 }
@@ -1027,51 +1427,80 @@ void BgpRouter::removeInstalledIpv6Routes()
 
 void BgpRouter::removeRoutesLearnedFromSession(SessionId sessionId)
 {
-    for (auto routeIt = bgpRoutingTable.begin(); routeIt != bgpRoutingTable.end(); ) {
+    // A failed session implicitly withdraws every route learned from that peer.
+    // Remove those candidates from Adj-RIB-In, remember the affected prefixes,
+    // then recompute each prefix once. If a backup candidate is present it is
+    // promoted; otherwise a withdrawal is propagated to the remaining peers.
+    struct Ipv4Prefix {
+        Ipv4Address prefix;
+        Ipv4Address netmask;
+    };
+    struct Ipv6Prefix {
+        Ipv6Address prefix;
+        int prefixLength = 0;
+    };
+
+    std::vector<Ipv4Prefix> affectedIpv4Prefixes;
+    std::vector<Ipv6Prefix> affectedIpv6Prefixes;
+
+    for (auto routeIt = adjRibIn.begin(); routeIt != adjRibIn.end(); ) {
         BgpRoutingTableEntry *entry = *routeIt;
-        if (entry->getLearnedSessionId() != sessionId) {
-            routeIt++;
-            continue;
-        }
-
-        EV_INFO << "Removing BGP IPv4 route learned from failed session "
-                << sessionId << ": " << entry->getDestination()
-                << "/" << entry->getNetmask().getNetmaskLength() << "\n";
-
-        sendWithdrawNlri(entry, sessionId, true);
-        routeIt = bgpRoutingTable.erase(routeIt);
-        if (entry->getRoutingTable())
-            rt->deleteRoute(entry);
-        else
-            delete entry;
-    }
-
-    for (int i = rt->getNumRoutes() - 1; i >= 0; i--) {
-        auto entry = dynamic_cast<BgpRoutingTableEntry *>(rt->getRoute(i));
-        if (entry && entry->getLearnedSessionId() == sessionId) {
-            EV_INFO << "Removing installed BGP IPv4 route learned from failed session "
+        if (entry->getLearnedSessionId() == sessionId) {
+            EV_INFO << "Removing BGP IPv4 candidate learned from failed session "
                     << sessionId << ": " << entry->getDestination()
                     << "/" << entry->getNetmask().getNetmaskLength() << "\n";
-            sendWithdrawNlri(entry, sessionId, true);
-            rt->deleteRoute(entry);
+            affectedIpv4Prefixes.push_back({entry->getDestination(), entry->getNetmask()});
+            routeIt = adjRibIn.erase(routeIt);
+            delete entry;
+        }
+        else
+            routeIt++;
+    }
+
+    for (auto routeIt = adjRibInIpv6.begin(); routeIt != adjRibInIpv6.end(); ) {
+        BgpIpv6RoutingTableEntry *entry = *routeIt;
+        if (entry->getLearnedSessionId() == sessionId) {
+            EV_INFO << "Removing MP-BGP IPv6 candidate learned from failed session "
+                    << sessionId << ": " << entry->getDestination()
+                    << "/" << entry->getPrefixLength() << "\n";
+            affectedIpv6Prefixes.push_back({entry->getDestination(), entry->getPrefixLength()});
+            routeIt = adjRibInIpv6.erase(routeIt);
+            delete entry;
+        }
+        else
+            routeIt++;
+    }
+
+    for (const auto& prefix : affectedIpv4Prefixes) {
+        BgpRoutingTableEntry *selectedRoute = nullptr;
+        BgpProcessResult result = recomputeIpv4Route(prefix.prefix, prefix.netmask, sessionId, true, selectedRoute);
+        if (result == RESULT0)
+            continue;
+
+        if (selectedRoute && selectedRoute->getLearnedSessionId() != 0)
+            updateSendProcess(result, selectedRoute->getLearnedSessionId(), selectedRoute);
+        else {
+            auto withdrawnEntry = new BgpRoutingTableEntry();
+            withdrawnEntry->setDestination(prefix.prefix);
+            withdrawnEntry->setNetmask(prefix.netmask);
+            sendWithdrawNlri(withdrawnEntry, sessionId, true);
+            delete withdrawnEntry;
         }
     }
 
-    for (auto routeIt = bgpIpv6RoutingTable.begin(); routeIt != bgpIpv6RoutingTable.end(); ) {
-        BgpIpv6RoutingTableEntry *entry = *routeIt;
-        if (entry->getLearnedSessionId() != sessionId) {
-            routeIt++;
+    for (const auto& prefix : affectedIpv6Prefixes) {
+        BgpIpv6RoutingTableEntry *selectedRoute = nullptr;
+        BgpProcessResult result = recomputeIpv6Route(prefix.prefix, prefix.prefixLength, sessionId, true, selectedRoute);
+        if (result == RESULT0)
             continue;
+
+        if (selectedRoute && selectedRoute->getLearnedSessionId() != 0)
+            updateSendProcess(result, selectedRoute->getLearnedSessionId(), selectedRoute);
+        else {
+            auto withdrawnEntry = new BgpIpv6RoutingTableEntry(prefix.prefix, prefix.prefixLength);
+            sendMpUnreachNlri(withdrawnEntry, sessionId, true);
+            delete withdrawnEntry;
         }
-
-        EV_INFO << "Removing MP-BGP IPv6 route learned from failed session "
-                << sessionId << ": " << entry->getDestination()
-                << "/" << entry->getPrefixLength() << "\n";
-
-        sendMpUnreachNlri(entry, sessionId, true);
-        removeInstalledIpv6Route(entry);
-        routeIt = bgpIpv6RoutingTable.erase(routeIt);
-        delete entry;
     }
 }
 
@@ -1188,14 +1617,32 @@ void BgpRouter::processMpUnreachNlri(const BgpUpdatePathAttributesMpUnreachNlri&
 
     for (size_t i = 0; i < mpUnreach.getWithdrawnRoutesArraySize(); i++) {
         const BgpMpNlri& withdrawn = mpUnreach.getWithdrawnRoutes(i);
-        BgpIpv6RoutingTableEntry *entry = findIpv6Route(withdrawn.ipv6Prefix, withdrawn.length, sessionIndex);
-        if (!entry) {
+        auto removedRoute = removeAdjRibInIpv6Route(withdrawn.ipv6Prefix, withdrawn.length, sessionIndex);
+        if (!removedRoute) {
             EV_INFO << "Ignoring MP_UNREACH_NLRI for unknown IPv6 route "
                     << withdrawn.ipv6Prefix << "/" << (int)withdrawn.length << "\n";
             continue;
         }
+        delete removedRoute;
 
-        withdrawIpv6Route(entry, sessionIndex, true);
+        EV_INFO << "Removed MP-BGP IPv6 candidate from Adj-RIB-In after MP_UNREACH_NLRI: "
+                << withdrawn.ipv6Prefix << "/" << (int)withdrawn.length << "\n";
+
+        // A withdrawal affects only this peer's candidate. Recompute the
+        // prefix from the remaining Adj-RIB-In entries so a backup path is
+        // advertised only when the selected route actually changes.
+        BgpIpv6RoutingTableEntry *selectedRoute = nullptr;
+        BgpProcessResult result = recomputeIpv6Route(withdrawn.ipv6Prefix, withdrawn.length, sessionIndex, true, selectedRoute);
+        if (result == RESULT0)
+            continue;
+
+        if (selectedRoute && selectedRoute->getLearnedSessionId() != 0)
+            updateSendProcess(result, selectedRoute->getLearnedSessionId(), selectedRoute);
+        else {
+            auto withdrawnEntry = new BgpIpv6RoutingTableEntry(withdrawn.ipv6Prefix, withdrawn.length);
+            sendMpUnreachNlri(withdrawnEntry, sessionIndex, true);
+            delete withdrawnEntry;
+        }
     }
 }
 
@@ -1263,6 +1710,13 @@ BgpProcessResult BgpRouter::decisionProcess(const BgpUpdateMessage& msg, BgpRout
     else
         entry->setAdminDist(Ipv4Route::dUnknown);
     entry->setLearnedSessionId(sessionIndex);
+
+    // Keep a peer-owned copy in Adj-RIB-In for future reselection. The original
+    // entry continues through the legacy IPv4 decision/install path below so
+    // existing RFC 4271 behavior and fingerprints remain unchanged.
+    auto oldAdjRoute = removeAdjRibInIpv4Route(entry->getDestination(), entry->getNetmask(), sessionIndex);
+    delete oldAdjRoute;
+    adjRibIn.push_back(cloneRoute(entry));
 
     // if the route already exists in BGP routing table, tieBreakingProcess();
     // (RFC 4271: 9.1.2.2 Breaking Ties)

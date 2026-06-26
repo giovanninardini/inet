@@ -47,14 +47,19 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     SocketMap _socketMap;
     SessionId _currSessionId = 0;
     std::map<SessionId, BgpSession *> _BGPSessions;
+    // Configured local BGP IPv4 endpoint addresses; kept separately so
+    // lifecycle crash cleanup can still identify peers after interfaces go down.
+    std::vector<Ipv4Address> localBgpAddresses;
     uint32_t numEgpSessions = 0;
     uint32_t numIgpSessions = 0;
     Ipv4Address internalAddress = Ipv4Address::UNSPECIFIED_ADDRESS;
 
     typedef std::vector<BgpRoutingTableEntry *> RoutingTableEntryVector;
     typedef std::vector<BgpIpv6RoutingTableEntry *> Ipv6RoutingTableEntryVector;
-    RoutingTableEntryVector bgpRoutingTable; // The BGP routing table
-    Ipv6RoutingTableEntryVector bgpIpv6RoutingTable; // The MP-BGP IPv6 routing table
+    RoutingTableEntryVector bgpRoutingTable; // The Loc-RIB selected BGP IPv4 routing table
+    Ipv6RoutingTableEntryVector bgpIpv6RoutingTable; // The Loc-RIB selected MP-BGP IPv6 routing table
+    RoutingTableEntryVector adjRibIn; // Peer-learned IPv4 route candidates, keyed by session and prefix
+    Ipv6RoutingTableEntryVector adjRibInIpv6; // Peer-learned IPv6 route candidates, keyed by session and prefix
     // Router-level timers for optional local IPv6 Network withdrawTime.
     // Unlike session FSM timers, these are not associated with a peer session.
     std::map<cMessage *, BgpIpv6RoutingTableEntry *> ipv6WithdrawRoutes;
@@ -94,6 +99,7 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void addWatches();
     void recordStatistics();
     void closeSessions(bool abort);
+    void notifyPeersOfLocalSessionFailure();
     void removeBgpRoutes(bool abort);
     void removeInstalledIpv6Routes();
     void removeRoutesLearnedFromSession(SessionId sessionId);
@@ -191,6 +197,10 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
 
     void withdrawIpv4Route(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
     void sendWithdrawNlri(BgpRoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
+    BgpRoutingTableEntry *findIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId) const;
+    BgpRoutingTableEntry *findAdjRibInIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId) const;
+    BgpRoutingTableEntry *removeAdjRibInIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId learnedSessionId);
+    BgpProcessResult recomputeIpv4Route(const Ipv4Address& prefix, const Ipv4Address& netmask, SessionId sourceSessionIndex, bool fromPeer, BgpRoutingTableEntry *&selectedRoute);
 
     bool isInASList(std::vector<AsId> ASList, BgpRoutingTableEntry *entry);
     bool isInASList(std::vector<AsId> ASList, BgpIpv6RoutingTableEntry *entry);
@@ -222,6 +232,9 @@ class INET_API BgpRouter : public TcpSocket::BufferingCallback
     void withdrawIpv6Route(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
     void sendMpUnreachNlri(BgpIpv6RoutingTableEntry *entry, SessionId sourceSessionIndex, bool fromPeer);
     BgpIpv6RoutingTableEntry *findIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId) const;
+    BgpIpv6RoutingTableEntry *findAdjRibInIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId) const;
+    BgpIpv6RoutingTableEntry *removeAdjRibInIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId learnedSessionId);
+    BgpProcessResult recomputeIpv6Route(const Ipv6Address& prefix, int prefixLength, SessionId sourceSessionIndex, bool fromPeer, BgpIpv6RoutingTableEntry *&selectedRoute);
 
     int isInRoutingTable(IIpv4RoutingTable *rtTable, Ipv4Address addr);
     SessionId findIdFromPeerAddr(std::map<SessionId, BgpSession *> sessions, Ipv4Address peerAddr);
