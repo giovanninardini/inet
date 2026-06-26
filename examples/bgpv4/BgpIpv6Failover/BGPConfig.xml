@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<BGPConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="BGP.xsd">
+
+    <TimerParams>
+        <!-- Keep the legacy ConnectRetryTimer outside this smoke run so the
+             scenario isolates HoldTimer-based peer failure detection. -->
+        <connectRetryTime> 1000 </connectRetryTime>
+        <holdTime> 6 </holdTime>
+        <keepAliveTime> 2 </keepAliveTime>
+        <startDelay> 2 </startDelay>
+    </TimerParams>
+
+    <AS id="65101">
+        <Router interAddr="10.0.1.1" addressFamilies="ipv6-unicast"> <!-- Router A, left edge -->
+            <Network address="2001:db8:101::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:12::1"/>
+            <Neighbor address="10.0.1.2" addressFamilies="ipv6-unicast"/>
+            <Neighbor address="10.0.2.2" addressFamilies="ipv6-unicast"/>
+        </Router>
+    </AS>
+
+    <AS id="65202">
+        <Router interAddr="10.0.1.2" addressFamilies="ipv6-unicast"> <!-- Router B, primary transit -->
+            <Neighbor address="10.0.1.1" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+            <Neighbor address="10.0.3.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+    </AS>
+
+    <AS id="65303">
+        <Router interAddr="10.0.2.2" addressFamilies="ipv6-unicast"> <!-- Router C, backup transit -->
+            <Neighbor address="10.0.2.1" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+            <Neighbor address="10.0.4.2" addressFamilies="ipv6-unicast" nextHopSelf="true"/>
+        </Router>
+    </AS>
+
+    <AS id="65404">
+        <Router interAddr="10.0.3.2" addressFamilies="ipv6-unicast"> <!-- Router D, right edge -->
+            <Network address="2001:db8:202::/64" afi="ipv6" safi="unicast" nextHop="2001:db8:24::2"/>
+            <Neighbor address="10.0.3.1" addressFamilies="ipv6-unicast"/>
+            <Neighbor address="10.0.4.1" addressFamilies="ipv6-unicast"/>
+        </Router>
+    </AS>
+
+    <Session id="1">
+        <Router exterAddr="10.0.1.1"/> <!-- A -->
+        <Router exterAddr="10.0.1.2"/> <!-- B -->
+    </Session>
+
+    <Session id="2">
+        <Router exterAddr="10.0.3.1"/> <!-- B -->
+        <Router exterAddr="10.0.3.2"/> <!-- D -->
+    </Session>
+
+    <Session id="3">
+        <Router exterAddr="10.0.2.1"/> <!-- A -->
+        <Router exterAddr="10.0.2.2"/> <!-- C -->
+    </Session>
+
+    <Session id="4">
+        <Router exterAddr="10.0.4.1"/> <!-- C -->
+        <Router exterAddr="10.0.4.2"/> <!-- D -->
+    </Session>
+
+</BGPConfig>

@@ -1,0 +1,27 @@
+<config>
+  <interface hosts='A' names='eth0' address='2001:db8:101::1'/>
+  <interface hosts='A' names='ppp0' address='2001:db8:12::1'/>
+  <interface hosts='A' names='ppp1' address='2001:db8:13::1'/>
+  <interface hosts='B' names='ppp0' address='2001:db8:12::2'/>
+  <interface hosts='B' names='ppp1' address='2001:db8:24::1'/>
+  <interface hosts='C' names='ppp0' address='2001:db8:13::2'/>
+  <interface hosts='C' names='ppp1' address='2001:db8:34::1'/>
+  <interface hosts='D' names='eth0' address='2001:db8:202::1'/>
+  <interface hosts='D' names='ppp0' address='2001:db8:24::2'/>
+  <interface hosts='D' names='ppp1' address='2001:db8:34::2'/>
+  <interface hosts='H1' names='eth0' address='2001:db8:101::11'/>
+  <interface hosts='H2' names='eth0' address='2001:db8:202::11'/>
+
+  <route hosts='H1' destination='::/0' gateway='2001:db8:101::1' interface='eth0'/>
+  <route hosts='H2' destination='::/0' gateway='2001:db8:202::1' interface='eth0'/>
+
+  <route hosts='A H1' destination='2001:db8:101::/64' interface='eth0'/>
+  <route hosts='D H2' destination='2001:db8:202::/64' interface='eth0'/>
+
+  <route hosts='A B' destination='2001:db8:12::/64' interface='ppp0'/>
+  <route hosts='A C' destination='2001:db8:13::/64' interface='ppp1'/>
+  <route hosts='B' destination='2001:db8:24::/64' interface='ppp1'/>
+  <route hosts='D' destination='2001:db8:24::/64' interface='ppp0'/>
+  <route hosts='C' destination='2001:db8:34::/64' interface='ppp1'/>
+  <route hosts='D' destination='2001:db8:34::/64' interface='ppp1'/>
+</config>

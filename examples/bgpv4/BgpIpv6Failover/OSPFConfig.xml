@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<OSPFASConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="OSPF.xsd">
+    <Area id="0.0.0.0">
+        <AddressRange address="10.0.0.0" mask="255.255.0.0" status="Advertise"/>
+    </Area>
+
+    <Router name="A" RFC1583Compatible="true">
+        <PointToPointInterface ifName="ppp0" areaID="0.0.0.0" interfaceOutputCost="10"/>
+        <PointToPointInterface ifName="ppp1" areaID="0.0.0.0" interfaceOutputCost="100"/>
+    </Router>
+
+    <Router name="B" RFC1583Compatible="true">
+        <PointToPointInterface ifName="ppp0" areaID="0.0.0.0" interfaceOutputCost="10"/>
+        <PointToPointInterface ifName="ppp1" areaID="0.0.0.0" interfaceOutputCost="10"/>
+    </Router>
+
+    <Router name="C" RFC1583Compatible="true">
+        <PointToPointInterface ifName="ppp0" areaID="0.0.0.0" interfaceOutputCost="100"/>
+        <PointToPointInterface ifName="ppp1" areaID="0.0.0.0" interfaceOutputCost="100"/>
+    </Router>
+
+    <Router name="D" RFC1583Compatible="true">
+        <PointToPointInterface ifName="ppp0" areaID="0.0.0.0" interfaceOutputCost="10"/>
+        <PointToPointInterface ifName="ppp1" areaID="0.0.0.0" interfaceOutputCost="100"/>
+    </Router>
+</OSPFASConfig>
